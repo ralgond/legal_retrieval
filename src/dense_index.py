@@ -92,7 +92,18 @@ class DenseIndex:
         # 按 float 逆序排序
         result = sorted(d.values(), key=lambda x: x[1], reverse=True)
         return result
-    
+
+    def __deduplicate_by_max_score(self, data: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
+        d = {}
+        for i, score in data:
+            if i not in d:
+                d[i] = score
+            elif score > d[i]:
+                d[i] = score
+
+        result = sorted([(i,score) for i,score in d.items()], key=lambda x: x[1], reverse=True)
+        return result
+        
     def search_with_score(self, q, top_k):
         query_encoded_result = self.model.encode(
             [q],
@@ -106,7 +117,7 @@ class DenseIndex:
 
         parent_index_score_l = [(self.parent_indices[idx], scores[0][i]) for i, idx in enumerate(indices[0])]
 
-        sorted_l = self.__deduplicate_by_float(parent_index_score_l)
+        sorted_l = self.__deduplicate_by_max_score(parent_index_score_l)
 
         ret = [(self.documents[idx], score) for idx, score in sorted_l]
 
