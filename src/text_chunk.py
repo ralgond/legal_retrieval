@@ -56,8 +56,34 @@ def batch_chunk_with_sliding_window(
             ret.append(new_doc)
     return ret
 
-def sliding_window_for_sentences(lst, window_size, step):
-    result = []
-    for i in range(0, len(lst) - window_size + 1, step):
-        result.append(' '.join(lst[i:i + window_size]))
-    return result
+def sliding_window_merge_last_unique(
+    data: list[str],
+    window_size: int,
+    step: int
+) -> list[list[str]]:
+    n = len(data)
+    windows = []
+
+    i = 0
+    while i < n:
+        window = data[i:i + window_size]
+
+        if len(window) < window_size:
+            if windows:
+                prev = windows[-1]
+                # 只追加不重复的部分
+                prev.extend(x for x in window if x not in prev)
+            else:
+                windows.append(window)
+            break
+        else:
+            windows.append(window)
+
+        i += step
+
+    return [' '.join(w) for w in windows]
+
+if __name__ == "__main__":
+    lst = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+    print(sliding_window_merge_last_unique(lst, 4, 2))
+

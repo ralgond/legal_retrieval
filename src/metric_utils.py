@@ -6,11 +6,11 @@ def cal_recall(all_hits_l, gold_citations_l, truncate_method=None):
         all_citation = []
         if truncate_method is None:
             for hit in all_hits:
-                all_citation.append(hit['citation'])
+                all_citation.append(hit)
         else:
             __limit = truncate_method(all_hits)
             for hit in all_hits[:__limit]:
-                all_citation.append(hit['citation'])
+                all_citation.append(hit)
 
         hits = len(set(all_citation) & set(gold_citations))
 
@@ -27,11 +27,11 @@ def cal_precision(all_hits_l, gold_citations_l, truncate_method=None):
         all_citation = []
         if truncate_method is None:
             for hit in all_hits:
-                all_citation.append(hit['citation'])
+                all_citation.append(hit)
         else:
             __limit = truncate_method(all_hits)
             for hit in all_hits[:__limit]:
-                all_citation.append(hit['citation'])
+                all_citation.append(hit)
         
         predicted = set(all_citation)
         hits = len(predicted & set(gold_citations))

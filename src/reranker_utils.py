@@ -4,6 +4,50 @@ from tqdm import tqdm
 
 import text_chunk
 
+def rerank_batch_with_anything(reranker, query: str, sentence_with_anything_l: list, batch_size=10):
+
+    null_fp = open(os.devnull, 'w')
+    sys.stderr = sys.__stderr__
+
+    any_l = []
+    sentences = []
+    for anything, sentence in sentence_with_anything_l:
+        any_l.append(anything)
+        sentences.append(sentence)
+    
+    l = []
+    pairs = []
+    docs2 = []
+    for sentence in sentences:
+        pairs.append([query, sentence])
+        docs2.append(sentence)
+        if len(pairs) == batch_size:
+            sys.stderr = null_fp
+            scores = reranker.compute_score(pairs, max_length=512, batch_size=batch_size, normalize=True, verbose=False)
+            sys.stderr = sys.__stderr__
+            for idx, _score in enumerate(scores):
+                l.append((docs2[idx], _score))
+            pairs = []
+            docs2 = []
+    if len(pairs) > 0:
+        sys.stderr = null_fp
+        scores = reranker.compute_score(pairs, max_length=512, batch_size=batch_size, normalize=True, verbose=False)
+        sys.stderr = sys.__stderr__
+        for idx, _score in enumerate(scores):
+            l.append((docs2[idx], _score))
+        pairs = []
+        docs2 = []
+
+    l2 = []
+    for item, (doc, _score) in zip(any_l, l):
+        l2.append((item, _score))
+        
+    sorted_l = sorted(l2, key=lambda x: x[1], reverse=True)
+
+    null_fp.close()
+    
+    return sorted_l
+    
 def rerank_by_dense_batch(reranker, query: str, sentences: list, top_k=10, batch_size=10):
 
     null_fp = open(os.devnull, 'w')

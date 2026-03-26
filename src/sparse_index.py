@@ -21,6 +21,7 @@ class SparseIndex:
         self.vocab_path = os.path.join(self.work_path, 'vocab.txt')
         self.doc_ids_path = os.path.join(self.work_path, "doc_ids.txt")
         self.engine = SparseSearchEngine(self.work_path)
+        self.load()
 
     def __load_sparse_dict(self, sparse_dict_path: str):
         ret = []
