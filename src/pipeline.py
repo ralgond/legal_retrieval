@@ -31,9 +31,10 @@ class Pipeline:
                  reranker,
                  test_df: pd.DataFrame,
                  valid_df: pd.DataFrame,
+                 **kwargs
                 ):
         self.court_consideration_df = court_consideration_df
-        self.court_consideration_d = court_consideration_df,
+        self.court_consideration_d = court_consideration_d,
         self.law_df = law_df
         self.law_d = law_d
         self.dense_index = dense_index
@@ -41,11 +42,17 @@ class Pipeline:
         self.reranker = reranker
         self.test_df = test_df
         self.valid_df = valid_df
-        
+
+        self.dense_recall_count = kwargs.get('dense_recall_count', 1000)
+        self.sparse_recall_count = kwargs.get('sparse_recall_count', 1000)
+        self.citation_agg_w1 = kwargs.get('citation_agg_w1', 0.5)
+        self.citation_agg_w2 = kwargs.get('citation_agg_w2', 0.5)
+        self.citation_agg_w3 = kwargs.get('citation_agg_w3', 0.5)
+        self.global_citaion_ranking_pool_method = kwargs.get('global_citaion_ranking_pool_method', 'sum')
 
     def recall(self, query):
-        hit_with_score_l1 = self.dense_index.search_with_score(query, 1000)
-        hit_with_score_l2 = self.sparse_index.search_with_score(query, 1000)
+        hit_with_score_l1 = self.dense_index.search_with_score(query, self.dense_recall_count)
+        hit_with_score_l2 = self.sparse_index.search_with_score(query, self.sparse_recall_count)
         hit_with_score_l = hits_utils.merge_hits_with_score_l_by_weighted_add(hit_with_score_l1, hit_with_score_l2, 0.5, 0.5)
         print("[recall] hit_with_score_l.len:", len(hit_with_score_l))
         return hit_with_score_l
@@ -94,9 +101,14 @@ class Pipeline:
         ret = []
         for citation in s1:
             score = 0.
-            score += 0.1 * math.log(citation_coverage_window_count_d[citation])
-            score += 0.5 * citation_peak_rel_window_d[citation]
-            score += 0.4 * citation_window_pos_d[citation]
+            score += self.citation_agg_w1  * math.log(citation_coverage_window_count_d[citation])
+            score += self.citation_agg_w2  * citation_peak_rel_window_d[citation]
+            score += self.citation_agg_w3  * citation_window_pos_d[citation]
+
+            # if citation_coverage_window_count_d[citation] == 1 and score < 1.:
+            #     # False positive 抑制
+            #     continue
+                
             ret.append((citation, score))
 
         return sorted(ret, key=lambda x: x[1], reverse=True)
@@ -124,8 +136,19 @@ class Pipeline:
     def global_citation_ranking(self, citation_score_l_l):
         d = defaultdict(float)
         for citation_score_l in citation_score_l_l:
-            for citation, score in citation_score_l:
-                d[citation] += score
+            if self.global_citaion_ranking_pool_method == 'sum':
+                sum pooling
+                for citation, score in citation_score_l:
+                    d[citation] += score
+            elif self.global_citaion_ranking_pool_method == 'max':
+                # max pooling
+                for citation, score in citation_score_l:
+                    if citation not in d:
+                        d[citation] = score
+                    elif d[citation] < score:
+                        d[citation] = score
+            else:
+                raise ValueError("unknown method:", self.global_citaion_ranking_pool_method)
 
         return sorted([(citation,score) for citation,score in d.items()], key=lambda x: x[1], reverse=True)
 
@@ -163,10 +186,15 @@ class Pipeline:
             ret = self.citation_aggregation(ret)
             ret = self.global_citation_ranking(ret)
 
-            ret_l.append([citation for citation,_ in ret])
+            ret2 = []
+            for citation,_ in ret:
+                if citation in self.court_consideration_d or citation in self.law_d:
+                    ret2.append(citation)
+                    
+            ret_l.append(ret2)
             gold_citation_l.append(gold_citations.split(';'))
-
             break
+
 
         for limit in [5,10,15,20,25,30,35,40,45]:
             r = metric_utils.cal_recall(ret_l, gold_citation_l, lambda x: limit)

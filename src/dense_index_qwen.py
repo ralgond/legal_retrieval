@@ -78,7 +78,7 @@ class DenseIndex:
         
         ret = []
         for idx in parent_indics2:
-            ret.append(self.documents[idx])
+            ret.append(self.documents[idx].copy())
             
         return ret
 
@@ -119,7 +119,7 @@ class DenseIndex:
 
         sorted_l = self.__deduplicate_by_max_score(parent_index_score_l)
 
-        ret = [(self.documents[idx], score) for idx, score in sorted_l]
+        ret = [(self.documents[idx].copy(), score) for idx, score in sorted_l]
 
         return ret
 
@@ -158,7 +158,7 @@ class DenseIndex:
             
             ret = []
             for idx in parent_indics2:
-                ret.append(self.documents[idx])
+                ret.append(self.documents[idx].copy())
 
             all_ret.append(ret)
             

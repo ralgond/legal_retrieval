@@ -73,7 +73,7 @@ class SparseIndex:
         seen_parent_idx_set = set([self.parent_indices[doc_id] for doc_id,score in res_l])
 
         for parent_idx in seen_parent_idx_set:
-            ret_doc_l.append(self.parent_documents[parent_idx])
+            ret_doc_l.append(self.parent_documents[parent_idx].copy())
 
         return ret_doc_l
 
@@ -108,7 +108,7 @@ class SparseIndex:
 
         sorted_l = self.__deduplicate_by_max_score(parent_index_score_l)
 
-        ret = [(self.parent_documents[idx], score) for idx, score in sorted_l]
+        ret = [(self.parent_documents[idx].copy(), score) for idx, score in sorted_l]
 
         return ret
 
