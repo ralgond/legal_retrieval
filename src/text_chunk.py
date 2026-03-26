@@ -55,3 +55,9 @@ def batch_chunk_with_sliding_window(
             new_doc = {'text': chunk, 'citation': doc['citation']}
             ret.append(new_doc)
     return ret
+
+def sliding_window_for_sentences(lst, window_size, step):
+    result = []
+    for i in range(0, len(lst) - window_size + 1, step):
+        result.append(' '.join(lst[i:i + window_size]))
+    return result

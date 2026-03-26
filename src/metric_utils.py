@@ -1,14 +1,15 @@
 import numpy as np
 
-def cal_recall(all_hits_l, gold_citations_l, limit=None):
+def cal_recall(all_hits_l, gold_citations_l, truncate_method=None):
     recalls = []
     for all_hits, gold_citations in zip(all_hits_l, gold_citations_l):   
         all_citation = []
-        if limit is None:
+        if truncate_method is None:
             for hit in all_hits:
                 all_citation.append(hit['citation'])
         else:
-            for hit in all_hits[:limit]:
+            __limit = truncate_method(all_hits)
+            for hit in all_hits[:__limit]:
                 all_citation.append(hit['citation'])
 
         hits = len(set(all_citation) & set(gold_citations))
@@ -20,15 +21,16 @@ def cal_recall(all_hits_l, gold_citations_l, limit=None):
     mean_recall = np.mean(recalls)
     return mean_recall
 
-def cal_precision(all_hits_l, gold_citations_l, limit=None):
+def cal_precision(all_hits_l, gold_citations_l, truncate_method=None):
     precisions = []
     for all_hits, gold_citations in zip(all_hits_l, gold_citations_l):
         all_citation = []
-        if limit is None:
+        if truncate_method is None:
             for hit in all_hits:
                 all_citation.append(hit['citation'])
         else:
-            for hit in all_hits[:limit]:
+            __limit = truncate_method(all_hits)
+            for hit in all_hits[:__limit]:
                 all_citation.append(hit['citation'])
         
         predicted = set(all_citation)

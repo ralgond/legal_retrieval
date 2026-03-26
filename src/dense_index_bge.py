@@ -55,12 +55,10 @@ class DenseIndex:
         # =========================
         query_encoded_result = self.model.encode(
             [q],
-            normalize_embeddings=True,
-            show_progress_bar=False
         )
 
         # query_embedding = np.array(query_embedding)
-        query_embedding = query_encoded_result
+        query_embedding = query_encoded_result['dense_vecs']
         # print("query_embedding.shape:", query_embedding.shape)
 
         scores, indices = self.index.search(query_embedding, top_k)
@@ -82,17 +80,6 @@ class DenseIndex:
             
         return ret
 
-    def __deduplicate_by_float(self, data: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
-        # 用 float 作为 key 去重
-        d = {}
-        for i, f in data:
-            if f not in d:
-                d[f] = (i, f)
-    
-        # 按 float 逆序排序
-        result = sorted(d.values(), key=lambda x: x[1], reverse=True)
-        return result
-
     def __deduplicate_by_max_score(self, data: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
         d = {}
         for i, score in data:
@@ -103,15 +90,13 @@ class DenseIndex:
 
         result = sorted([(i,score) for i,score in d.items()], key=lambda x: x[1], reverse=True)
         return result
-        
+
     def search_with_score(self, q, top_k):
         query_encoded_result = self.model.encode(
-            [q],
-            normalize_embeddings=True,
-            show_progress_bar=False
+            [q]
         )
 
-        query_embedding = query_encoded_result
+        query_embedding = query_encoded_result['dense_vecs']
 
         scores, indices = self.index.search(query_embedding, top_k)
 
@@ -122,45 +107,4 @@ class DenseIndex:
         ret = [(self.documents[idx], score) for idx, score in sorted_l]
 
         return ret
-
-    def search_batch(self, q_list, top_k):
-        '''
-        return: list of index of embeddings
-        '''
-        if not isinstance(q_list, list):
-            raise ValueError("q_list should be list")
-            
-        # =========================
-        # 4. 查询
-        # =========================
-        query_encoded_result = self.model.encode(
-            q_list
-        )
-
-        # query_embedding = np.array(query_embedding)
-        query_embedding = query_encoded_result
-        # print("query_embedding.shape:", query_embedding.shape)
-
-        scores, indices = self.index.search(query_embedding, top_k)
-
-        all_ret = []
-        for index in indices:
-            parent_indics = [self.parent_indices[idx] for idx in index]
-
-            seen_parent_indics = set()
-            parent_indics2 = []
-            for parent_idx in parent_indics:
-                if parent_idx in seen_parent_indics:
-                    pass
-                else:
-                    seen_parent_indics.add(parent_idx)
-                    parent_indics2.append(parent_idx)
-            
-            ret = []
-            for idx in parent_indics2:
-                ret.append(self.documents[idx])
-
-            all_ret.append(ret)
-            
-        return all_ret
     
