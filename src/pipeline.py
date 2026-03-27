@@ -10,14 +10,15 @@ import citation_utils
 import reranker_utils
 import metric_utils
 import text_chunk
+import rrf
 
 # 瑞士德语法律文档典型段落标志
 SECTION_PATTERNS = {
-    "sachverhalt":   (r"(Sachverhalt|Tatbestand|A\.\s)", 1.4),   # 事实陈述
-    "erwaegungen":   (r"(Erwägung|Erwägungen|E\.\s)",    1.2),   # 法律考量（核心）
-    "dispositiv":    (r"(Dispositiv|Demnach|erkennt)",   1.8),   # 判决主文 ← 最高权重
-    "rechtsmittel":  (r"(Rechtsmittel|Beschwerde)",      0.7),   # 上诉告知
-    "unterschrift":  (r"(\d{1,2}\.\s\w+\s\d{4}|Im Namen)", 0.3), # 日期/签名
+    "sachverhalt":   (r"(Sachverhalt|Tatbestand|A\.\s)", 0.7),   # 事实陈述
+    "erwaegungen":   (r"(Erwägung|Erwägungen|E\.\s)",    0.6),   # 法律考量（核心）
+    "dispositiv":    (r"(Dispositiv|Demnach|erkennt)",   0.9),   # 判决主文 ← 最高权重
+    "rechtsmittel":  (r"(Rechtsmittel|Beschwerde)",      0.35),   # 上诉告知
+    "unterschrift":  (r"(\d{1,2}\.\s\w+\s\d{4}|Im Namen)", 0.15), # 日期/签名
 }
 
 class Pipeline:
@@ -49,9 +50,13 @@ class Pipeline:
         self.citation_agg_w2 = kwargs.get('citation_agg_w2', 0.5)
         self.citation_agg_w3 = kwargs.get('citation_agg_w3', 0.5)
         self.global_citaion_ranking_pool_method = kwargs.get('global_citaion_ranking_pool_method', 'sum')
+        self.global_citation_ranking_agg_weight = kwargs.get('global_citation_ranking_agg_weight', 0.7)
+        self.global_citation_ranking_recall_weight = kwargs.get('global_citation_ranking_recall_weight', 0.3)
+        self.global_citation_ranking_recall_decay_fn = kwargs.get('global_citation_ranking_recall_decay_fn', lambda x: x)
         self.false_positive_threshold_score = kwargs.get('false_positive_threshold_score', 1.0)
         self.window_size = kwargs.get('window_size', 4)
         self.step = kwargs.get('step', 1)
+        
         
     def recall(self, query):
         hit_with_score_l1 = self.dense_index.search_with_score(query, self.dense_recall_count)
@@ -136,7 +141,34 @@ class Pipeline:
 
         return ret
 
-    def global_citation_ranking(self, citation_score_l_l):
+    def global_citation_ranking_expand_to_citation(self, recall_hit_with_score_l):
+        citation_score_d = {}
+        if self.global_citaion_ranking_pool_method == 'sum':
+            for hit, score in recall_hit_with_score_l:
+                citations = citation_utils.extract_citations_from_text(hit['text'])
+                for citation in citations:
+                    if citation in citation_score_d:
+                        citation_score_d[citation] += score
+                    else:
+                        citation_score_d[citation] = score
+        elif self.global_citaion_ranking_pool_method == 'max':
+            for hit, score in recall_hit_with_score_l:
+                citations = citation_utils.extract_citations_from_text(hit['text'])
+                for citation in citations:
+                    if citation not in citation_score_d:
+                        citation_score_d[citation] = score
+                    elif citation_score_d[citation] < score:
+                        citation_score_d[citation] = score
+        else:
+            raise ValueError("unknown method:", self.global_citaion_ranking_pool_method)
+            
+        return citation_score_d
+
+    def __debug(self, citation_score_d, desc):
+        l = sorted([(citation,score) for citation,score in citation_score_d.items()], key=lambda x: x[1], reverse=True)
+        print(desc, l[:5])
+        
+    def global_citation_ranking(self, citation_score_l_l, recall_hit_with_score_l):
         d = defaultdict(float)
         for citation_score_l in citation_score_l_l:
             if self.global_citaion_ranking_pool_method == 'sum':
@@ -153,7 +185,22 @@ class Pipeline:
             else:
                 raise ValueError("unknown method:", self.global_citaion_ranking_pool_method)
 
-        return sorted([(citation,score) for citation,score in d.items()], key=lambda x: x[1], reverse=True)
+        d2 = self.global_citation_ranking_expand_to_citation(recall_hit_with_score_l)
+
+        d3 = {}
+        for citation,score in d2.items():
+            d3[citation] = self.global_citation_ranking_recall_decay_fn(score)
+            
+        self.__debug(d, "agg")
+        self.__debug(d3, "recall")
+
+        merged_result_d = defaultdict(float)
+        for citation, score in d.items():
+            merged_result_d[citation] += self.global_citation_ranking_agg_weight * score
+        for citation, score in d3.items():
+            merged_result_d[citation] += self.global_citation_ranking_recall_weight * score
+        
+        return sorted([(citation,score) for citation,score in merged_result_d.items()], key=lambda x: x[1], reverse=True)
 
     
     def rerank(self, query, hit_with_recall_score_l):
@@ -182,11 +229,11 @@ class Pipeline:
         query_id_l = []
         predicted_citations_l = []
         for query_id, query in tqdm(zip(self.test_df['query_id'].tolist(), self.test_df['query'].tolist()), total=len(self.test_df), desc="generate_submission"):
-            ret = self.recall(query)
-            self.normalize_sr(ret)
-            ret = self.rerank(query, ret)
+            hit_with_score_l = self.recall(query)
+            self.normalize_sr(hit_with_score_l)
+            ret = self.rerank(query, hit_with_score_l)
             ret = self.citation_aggregation(ret)
-            ret = self.global_citation_ranking(ret)
+            ret = self.global_citation_ranking(ret, hit_with_score_l)
 
             ret2 = []
             for citation,_ in ret:
@@ -207,11 +254,11 @@ class Pipeline:
         gold_citation_l = []
         for query, gold_citations in tqdm(zip(self.valid_df['query2'].tolist(), 
                                               self.valid_df['gold_citations'].tolist()), total=len(self.valid_df), desc="evaluation"):
-            ret = self.recall(query)
-            self.normalize_sr(ret)
-            ret = self.rerank(query, ret)
+            hit_with_score_l = self.recall(query)
+            self.normalize_sr(hit_with_score_l)
+            ret = self.rerank(query, hit_with_score_l)
             ret = self.citation_aggregation(ret)
-            ret = self.global_citation_ranking(ret)
+            ret = self.global_citation_ranking(ret, hit_with_score_l)
 
             ret2 = []
             for citation,_ in ret:
