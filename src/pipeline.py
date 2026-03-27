@@ -49,7 +49,10 @@ class Pipeline:
         self.citation_agg_w2 = kwargs.get('citation_agg_w2', 0.5)
         self.citation_agg_w3 = kwargs.get('citation_agg_w3', 0.5)
         self.global_citaion_ranking_pool_method = kwargs.get('global_citaion_ranking_pool_method', 'sum')
-
+        self.false_positive_threshold_score = kwargs.get('false_positive_threshold_score', 1.0)
+        self.window_size = kwargs.get('window_size', 4)
+        self.step = kwargs.get('step', 1)
+        
     def recall(self, query):
         hit_with_score_l1 = self.dense_index.search_with_score(query, self.dense_recall_count)
         hit_with_score_l2 = self.sparse_index.search_with_score(query, self.sparse_recall_count)
@@ -105,9 +108,9 @@ class Pipeline:
             score += self.citation_agg_w2  * citation_peak_rel_window_d[citation]
             score += self.citation_agg_w3  * citation_window_pos_d[citation]
 
-            # if citation_coverage_window_count_d[citation] == 1 and score < 1.:
-            #     # False positive 抑制
-            #     continue
+            if citation_coverage_window_count_d[citation] == 1 and score < self.false_positive_threshold_score:
+                # False positive 抑制
+                continue
                 
             ret.append((citation, score))
 
@@ -137,7 +140,7 @@ class Pipeline:
         d = defaultdict(float)
         for citation_score_l in citation_score_l_l:
             if self.global_citaion_ranking_pool_method == 'sum':
-                sum pooling
+                # sum pooling
                 for citation, score in citation_score_l:
                     d[citation] += score
             elif self.global_citaion_ranking_pool_method == 'max':
@@ -162,7 +165,7 @@ class Pipeline:
         for hit, score in hit_with_recall_score_l:
             parent = hit['text']
             s_l = citation_utils.split_sentences(parent)
-            s_l_2 = text_chunk.sliding_window_merge_last_unique(s_l, 4, 2)
+            s_l_2 = text_chunk.sliding_window_merge_last_unique(s_l, self.window_size, self.step)
             if len(s_l_2) > 1:
                 count += 1
 
@@ -175,7 +178,31 @@ class Pipeline:
 
         return sorted_parent_child_with_score_l
 
-    def evaluate(self):
+    def generate_submission(self, limit=40) -> pd.DataFrame:
+        query_id_l = []
+        predicted_citations_l = []
+        for query_id, query in tqdm(zip(self.test_df['query_id'].tolist(), self.test_df['query'].tolist()), total=len(self.test_df), desc="generate_submission"):
+            ret = self.recall(query)
+            self.normalize_sr(ret)
+            ret = self.rerank(query, ret)
+            ret = self.citation_aggregation(ret)
+            ret = self.global_citation_ranking(ret)
+
+            ret2 = []
+            for citation,_ in ret:
+                if citation in self.court_consideration_d or citation in self.law_d:
+                    ret2.append(citation)
+
+            pred = ';'.join(ret2[:limit])
+
+            query_id_l.append(query_id)
+            predicted_citations_l.append(pred)
+            
+        return pd.DataFrame({'query_id':query_id_l, 'predicted_citations':predicted_citations_l})
+            
+        
+    def evaluate(self, stop=None):
+        count = 0
         ret_l = []
         gold_citation_l = []
         for query, gold_citations in tqdm(zip(self.valid_df['query2'].tolist(), 
@@ -193,12 +220,19 @@ class Pipeline:
                     
             ret_l.append(ret2)
             gold_citation_l.append(gold_citations.split(';'))
-            break
+            
+            count += 1
+            if stop is not None and count >= stop:
+                break
 
-
+        max_limit = None
+        max_f1 = 0
         for limit in [5,10,15,20,25,30,35,40,45]:
             r = metric_utils.cal_recall(ret_l, gold_citation_l, lambda x: limit)
             p = metric_utils.cal_precision(ret_l, gold_citation_l, lambda x: limit)
             f1 = metric_utils.cal_f1(r, p)
-            print(f"[{limit}] r:",r,"p:",p,"f1:",f1)
+            if max_f1 < f1:
+                max_limit = limit
+                max_f1 = f1
+        print(f"[{max_limit}] f1:",max_f1)
         
