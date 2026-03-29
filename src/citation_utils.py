@@ -1,4 +1,5 @@
 import re
+import math
 from collections import defaultdict
 import citation_utils2
 
@@ -117,7 +118,7 @@ def compute_citation_score_with_sentence_pos(candidates_with_scores, decay="reci
     for doc, reranker_score in candidates_with_scores:
         text = normalized_sr(doc['text'])
         if text != doc['text']:
-            print("====>sr") 
+            pass 
         sentences = split_sentences(text)
         cited_laws = extract_citations_from_text(text)  # 你的citation抽取函数, 这里就没有sr开头的art了
         
@@ -132,15 +133,41 @@ def compute_citation_score_with_sentence_pos(candidates_with_scores, decay="reci
             position_weight = decay_fn(pos)
             if law not in law_scores:
                 law_scores[law] = reranker_score * position_weight
-            elif law_scores[law] < reranker_score * position_weight:
-                law_scores[law] = reranker_score * position_weight
-
-    # laws = [law for law,_ in law_scores.items()]
-
-    # dedup_laws = set(citation_utils2.deduplicate(laws))
-
-    # for law in laws:
-    #     if law not in dedup_laws:
-    #         del law_scores[law]
+            # elif law_scores[law] < reranker_score * position_weight:
+            #     law_scores[law] = reranker_score * position_weight
+            else:
+                law_scores[law] += reranker_score * position_weight
     
     return sorted(law_scores.items(), key=lambda x: -x[1])
+
+import court_consideration_utils
+
+def compute_citation_score_with_court_consideration_sector_pos(candidates_with_scores):
+
+    law_scores = {}
+    
+    for doc, reranker_score in candidates_with_scores:
+        text = normalized_sr(doc['text'])
+        cited_laws = extract_citations_from_text(text)  # 你的citation抽取函数, 这里就没有sr开头的art了
+
+        sectors = court_consideration_utils.split_court_document(text)
+
+        law_max_weight_pos = {}
+        for i, s in enumerate(sectors):
+            for law in cited_laws:
+                if law in s.text:
+                    if law not in law_max_weight_pos:
+                        law_max_weight_pos[law] = s
+                    elif law_max_weight_pos[law].weight < s.wight:
+                        law_max_weight_pos[law] = s
+                    
+        for law, s in law_max_weight_pos.items():
+            position_weight = s.weight
+            if law not in law_scores:
+                law_scores[law] = reranker_score * position_weight
+            # elif law_scores[law] < reranker_score * position_weight:
+            else:
+                law_scores[law] += reranker_score * position_weight
+
+    return sorted(law_scores.items(), key=lambda x: -x[1])
+        

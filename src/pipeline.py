@@ -35,7 +35,7 @@ class Pipeline:
                  **kwargs
                 ):
         self.court_consideration_df = court_consideration_df
-        self.court_consideration_d = court_consideration_d,
+        self.court_consideration_d = court_consideration_d
         self.law_df = law_df
         self.law_d = law_d
         self.dense_index = dense_index
@@ -83,42 +83,38 @@ class Pipeline:
         return fallback
     
     def __score_citation_for_doc(self, citation_parent_child_score_l):
-        # 1. 该 citation 被覆盖的 window 数量（coverage）
-        citation_coverage_window_count_d = defaultdict(int)
+        citation_coverage_count_d = defaultdict(int)
+        citation_peak_score_d = defaultdict(float)
+        citation_pos_score_d = defaultdict(float)
+    
         for citation, parent, child, score in citation_parent_child_score_l:
-            citation_coverage_window_count_d[citation] += 1
-            
-        # 2. 最高 window 分数（peak relevance）
-        citation_peak_rel_window_d = defaultdict(float)
-        for citation, parent, child, score in citation_parent_child_score_l:
-            if citation not in citation_coverage_window_count_d:
-                citation_coverage_window_count_d[citation] = score
-            elif citation_coverage_window_count_d[citation] < score:
-                citation_coverage_window_count_d[citation] = score
-        
-        # 3. window 在文档中的位置权重（开头和结尾的段落通常更重要）
-        citation_window_pos_d = defaultdict(float)
-        for citation, parent, child, score in citation_parent_child_score_l:
+            # 1. coverage：直接累加
+            citation_coverage_count_d[citation] += 1
+    
+            # 2. peak relevance：取最大 reranker score
+            if score > citation_peak_score_d[citation]:
+                citation_peak_score_d[citation] = score
+    
+            # 3. position：取最大结构权重
             pos_score = self.__structural_weight(child)
-            if citation not in citation_coverage_window_count_d:
-                citation_coverage_window_count_d[citation] = pos_score
-            elif citation_coverage_window_count_d[citation] < pos_score:
-                citation_coverage_window_count_d[citation] = pos_score
-
-        s1 = set(citation_coverage_window_count_d.keys()) | set(citation_peak_rel_window_d.keys()) | set(citation_window_pos_d.keys())
+            if pos_score > citation_pos_score_d[citation]:
+                citation_pos_score_d[citation] = pos_score
+    
+        all_citations = set(citation_coverage_count_d.keys())
         ret = []
-        for citation in s1:
-            score = 0.
-            score += self.citation_agg_w1  * math.log(citation_coverage_window_count_d[citation])
-            score += self.citation_agg_w2  * citation_peak_rel_window_d[citation]
-            score += self.citation_agg_w3  * citation_window_pos_d[citation]
-
-            if citation_coverage_window_count_d[citation] == 1 and score < self.false_positive_threshold_score:
-                # False positive 抑制
+        for citation in all_citations:
+            coverage = citation_coverage_count_d[citation]
+            score = (
+                self.citation_agg_w1 * math.log1p(coverage)   # log1p 避免 log(0)
+              + self.citation_agg_w2 * citation_peak_score_d[citation]
+              + self.citation_agg_w3 * citation_pos_score_d[citation]
+            )
+    
+            if coverage == 1 and score < self.false_positive_threshold_score:
                 continue
-                
+    
             ret.append((citation, score))
-
+    
         return sorted(ret, key=lambda x: x[1], reverse=True)
 
     def citation_aggregation(self, sorted_parent_child_with_score_l):
@@ -168,40 +164,42 @@ class Pipeline:
         l = sorted([(citation,score) for citation,score in citation_score_d.items()], key=lambda x: x[1], reverse=True)
         print(desc, l[:5])
         
+    def _minmax_normalize(self, score_d: dict) -> dict:
+        if not score_d:
+            return {}
+        lo = min(score_d.values())
+        hi = max(score_d.values())
+        span = hi - lo or 1.0
+        return {k: (v - lo) / span for k, v in score_d.items()}
+
     def global_citation_ranking(self, citation_score_l_l, recall_hit_with_score_l):
+        # agg 端
         d = defaultdict(float)
         for citation_score_l in citation_score_l_l:
-            if self.global_citaion_ranking_pool_method == 'sum':
-                # sum pooling
-                for citation, score in citation_score_l:
+            for citation, score in citation_score_l:
+                if self.global_citaion_ranking_pool_method == 'sum':
                     d[citation] += score
-            elif self.global_citaion_ranking_pool_method == 'max':
-                # max pooling
-                for citation, score in citation_score_l:
-                    if citation not in d:
-                        d[citation] = score
-                    elif d[citation] < score:
-                        d[citation] = score
-            else:
-                raise ValueError("unknown method:", self.global_citaion_ranking_pool_method)
-
+                elif self.global_citaion_ranking_pool_method == 'max':
+                    d[citation] = max(d[citation], score)
+    
+        # recall 端
         d2 = self.global_citation_ranking_expand_to_citation(recall_hit_with_score_l)
-
-        d3 = {}
-        for citation,score in d2.items():
-            d3[citation] = self.global_citation_ranking_recall_decay_fn(score)
-            
-        self.__debug(d, "agg")
-        self.__debug(d3, "recall")
-
-        merged_result_d = defaultdict(float)
-        for citation, score in d.items():
-            merged_result_d[citation] += self.global_citation_ranking_agg_weight * score
-        for citation, score in d3.items():
-            merged_result_d[citation] += self.global_citation_ranking_recall_weight * score
-        
-        return sorted([(citation,score) for citation,score in merged_result_d.items()], key=lambda x: x[1], reverse=True)
-
+        d2 = {c: self.global_citation_ranking_recall_decay_fn(s) for c, s in d2.items()}
+    
+        # 归一化后再融合
+        d_norm  = self._minmax_normalize(d)
+        d2_norm = self._minmax_normalize(d2)
+    
+        self.__debug(d_norm,  "agg (normalized)")
+        self.__debug(d2_norm, "recall (normalized)")
+    
+        merged = defaultdict(float)
+        for citation, score in d_norm.items():
+            merged[citation] += self.global_citation_ranking_agg_weight * score
+        for citation, score in d2_norm.items():
+            merged[citation] += self.global_citation_ranking_recall_weight * score
+    
+        return sorted(merged.items(), key=lambda x: -x[1])
     
     def rerank(self, query, hit_with_recall_score_l):
         sentences = []
@@ -248,38 +246,42 @@ class Pipeline:
         return pd.DataFrame({'query_id':query_id_l, 'predicted_citations':predicted_citations_l})
             
         
-    def evaluate(self, stop=None):
+    def evaluate(self, start=0, stop=None):
         count = 0
         ret_l = []
         gold_citation_l = []
         for query, gold_citations in tqdm(zip(self.valid_df['query2'].tolist(), 
                                               self.valid_df['gold_citations'].tolist()), total=len(self.valid_df), desc="evaluation"):
-            hit_with_score_l = self.recall(query)
-            self.normalize_sr(hit_with_score_l)
-            ret = self.rerank(query, hit_with_score_l)
-            ret = self.citation_aggregation(ret)
-            ret = self.global_citation_ranking(ret, hit_with_score_l)
-
-            ret2 = []
-            for citation,_ in ret:
-                if citation in self.court_consideration_d or citation in self.law_d:
-                    ret2.append(citation)
-                    
-            ret_l.append(ret2)
-            gold_citation_l.append(gold_citations.split(';'))
-            
+            if count >= start:
+                hit_with_score_l = self.recall(query)
+                self.normalize_sr(hit_with_score_l)
+                ret = self.rerank(query, hit_with_score_l)
+                ret = self.citation_aggregation(ret)
+                ret = self.global_citation_ranking(ret, hit_with_score_l)
+    
+                ret2 = []
+                for citation,_ in ret:
+                    if citation in self.court_consideration_d or citation in self.law_d:
+                        ret2.append(citation)
+                        
+                ret_l.append(ret2)
+                gold_citation_l.append(gold_citations.split(';'))
+                
             count += 1
             if stop is not None and count >= stop:
                 break
 
         max_limit = None
+        max_r = None
+        max_p = None
         max_f1 = 0
         for limit in [5,10,15,20,25,30,35,40,45]:
-            r = metric_utils.cal_recall(ret_l, gold_citation_l, lambda x: limit)
-            p = metric_utils.cal_precision(ret_l, gold_citation_l, lambda x: limit)
-            f1 = metric_utils.cal_f1(r, p)
-            if max_f1 < f1:
+            ret_l2 = [l[:limit] for l in ret_l]
+            result = metric_utils.macro_f1(ret_l2, gold_citation_l)
+            if max_f1 < result['macro_f1']:
+                max_r = result['macro_recall']
+                max_p = result['macro_precision']
                 max_limit = limit
-                max_f1 = f1
-        print(f"[{max_limit}] f1:",max_f1)
+                max_f1 = result['macro_f1']
+        print(f"[{max_limit}] r:", max_r, ", p:", max_p, "f1:",max_f1)
         
