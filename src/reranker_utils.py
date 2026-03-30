@@ -207,6 +207,50 @@ def rerank_by_batch_chunked2(reranker, query: str, documents: list, batch_size=1
     
     return doc_with_score_l
 
+
+def rerank_by_batch_chunked2_with_citation_prefix(reranker, query: str, documents: list, batch_size=10, chunk_size=382, overlap_size=124):
+    '''
+    len(ret) == len(documents)
+    '''
+    null_fp = open(os.devnull, 'w')
+    sys.stderr = sys.__stderr__
+
+    
+    parent_idx_l = []
+    l = []
+    pairs = []
+    docs2 = []
+    for parent_idx, doc in enumerate(documents):
+        for chunk in text_chunk.chunk_with_sliding_window(doc['text'], chunk_size, overlap_size):
+            pairs.append([query, doc['text']+" [CITATION] "+ doc['citation']])
+            docs2.append(doc)
+            parent_idx_l.append(parent_idx)
+        if len(pairs) >= batch_size:
+            sys.stderr = null_fp
+            scores = reranker.compute_score(pairs, max_length=1024, batch_size=batch_size, normalize=True, verbose=False)
+            sys.stderr = sys.__stderr__
+            for idx, _score in enumerate(scores):
+                l.append((docs2[idx], _score))
+            pairs = []
+            docs2 = []
+    if len(pairs) > 0:
+        sys.stderr = null_fp
+        scores = reranker.compute_score(pairs, max_length=1024, batch_size=batch_size, normalize=True, verbose=False)
+        sys.stderr = sys.__stderr__
+        for idx, _score in enumerate(scores):
+            l.append((docs2[idx], _score))
+        pairs = []
+        docs2 = []
+
+    null_fp.close()
+
+    doc_with_score_l = dedup_with_max_tuple(parent_idx_l, l)
+
+    assert(len(doc_with_score_l) == len(documents))
+    
+    return doc_with_score_l
+    
+
 if __name__ == "__main__":
     ids = [1, 1, 2, 2, 2, 3]
     scores = [
