@@ -170,4 +170,30 @@ def compute_citation_score_with_court_consideration_sector_pos(candidates_with_s
                 law_scores[law] += reranker_score * position_weight
 
     return sorted(law_scores.items(), key=lambda x: -x[1])
-        
+
+
+def parse_cc_output_citations_and_sentences(text):
+    text = normalized_sr(text)
+    sentences = split_sentences(text)
+    cited_laws = extract_citations_from_text(text)  # 你的citation抽取函数, 这里就没有sr开头的art了
+
+    # 建立每个法条首次出现的句子位置
+    law_first_pos = {}
+    for i, sent in enumerate(sentences):
+        for law in cited_laws:
+            if law in sent and law not in law_first_pos:
+                law_first_pos[law] = i
+                
+    return {'sentences':sentences, 'citations':[(citation, first_pos) for citation, first_pos in law_first_pos.items()]}
+
+
+def build_evidence(sentences, citation_idx, window_size=3):
+    """
+    sentences: List[str]
+    citation_idx: citation first occurs sentence index
+    """
+    half = window_size // 2
+    left = max(0, citation_idx - half)
+    right = min(len(sentences), citation_idx + half + 1)
+    return " ".join(sentences[left:right])
+

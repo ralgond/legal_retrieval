@@ -27,6 +27,7 @@ from transformers import (
     Trainer,
     EarlyStoppingCallback,
 )
+
 from peft import LoraConfig, get_peft_model, TaskType
 
 logging.basicConfig(level=logging.INFO)
@@ -39,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RerankerConfig:
-    base_model: str = "deepset/gbert-large"
-    output_dir: str = "./reranker-lora-output"
+    base_model: str = "/root/.cache/modelscope/hub/models/BAAI/bge-reranker-v2-m3"
+    output_dir: str = "../ft_data/reranker-lora-output"
     max_length: int = 512
 
     # LoRA
@@ -52,8 +53,8 @@ class RerankerConfig:
     )
 
     # 数据
-    train_file: str = "data/train.jsonl"
-    val_file: str = "data/val.jsonl"
+    train_file: str = "../ft_data/train.jsonl"
+    val_file: str = "../ft_data/val.jsonl"
 
     # 软标签参数
     label_smoothing: float = 0.05
@@ -319,7 +320,7 @@ def train(cfg: RerankerConfig = CFG):
         num_train_epochs=cfg.num_train_epochs,
         warmup_ratio=cfg.warmup_ratio,
         lr_scheduler_type="cosine",
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=cfg.eval_steps,
         save_strategy="steps",
         save_steps=cfg.save_steps,
