@@ -6,12 +6,12 @@ python finetune_bge_reranker_lora.py \
   --train_file ../ft_data/train.jsonl \
   --eval_file ../ft_data/valid.jsonl \
   --max_length 512 \
-  --lora_r 16 \
+  --lora_r 8 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
   --lora_target_modules "query,key,value" \
   --output_dir ../ft_data/bge-reranker-lora \
-  --num_train_epochs 3 \
+  --num_train_epochs 1 \
   --per_device_train_batch_size 8 \
   --per_device_eval_batch_size 32 \
   --gradient_accumulation_steps 2 \

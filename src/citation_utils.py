@@ -184,7 +184,7 @@ def parse_cc_output_citations_and_sentences(text):
             if law in sent and law not in law_first_pos:
                 law_first_pos[law] = i
                 
-    return {'sentences':sentences, 'citations':[(citation, first_pos) for citation, first_pos in law_first_pos.items()]}
+    return {'sentences':sentences, 'citations':[(law,idx) for law,idx in law_first_pos.items()]}
 
 
 def build_evidence(sentences, citation_idx, window_size=3):
@@ -196,4 +196,10 @@ def build_evidence(sentences, citation_idx, window_size=3):
     left = max(0, citation_idx - half)
     right = min(len(sentences), citation_idx + half + 1)
     return " ".join(sentences[left:right])
+
+def remove_citation_from_text(text):
+    citations = extract_citations_from_text(text)
+    for c in citations:
+        text = text.replace(c, "")
+    return text
 

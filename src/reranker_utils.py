@@ -207,6 +207,42 @@ def rerank_by_batch_chunked2(reranker, query: str, documents: list, batch_size=1
     
     return doc_with_score_l
 
+def rerank_by_batch_chunked_simple(reranker, query: str, documents: list, batch_size=10):
+    '''
+    len(ret) == len(documents)
+    '''
+    null_fp = open(os.devnull, 'w')
+    sys.stderr = sys.__stderr__
+
+    l = []
+    pairs = []
+    docs2 = []
+    for parent_idx, doc in enumerate(documents):
+        pairs.append([query, doc['text']])
+        docs2.append(doc)
+        if len(pairs) >= batch_size:
+            sys.stderr = null_fp
+            scores = reranker.compute_score(pairs, max_length=1024, batch_size=batch_size, normalize=True, verbose=False)
+            sys.stderr = sys.__stderr__
+            for idx, _score in enumerate(scores):
+                l.append((docs2[idx], _score))
+            pairs = []
+            docs2 = []
+    if len(pairs) > 0:
+        sys.stderr = null_fp
+        scores = reranker.compute_score(pairs, max_length=1024, batch_size=batch_size, normalize=True, verbose=False)
+        sys.stderr = sys.__stderr__
+        for idx, _score in enumerate(scores):
+            l.append((docs2[idx], _score))
+        pairs = []
+        docs2 = []
+
+    null_fp.close()
+
+    assert(len(l) == len(documents))
+    
+    return l
+
 
 def rerank_by_batch_chunked2_with_citation_prefix(reranker, query: str, documents: list, batch_size=10, chunk_size=382, overlap_size=124):
     '''
