@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-DATA_DIR   = "./lgbm_data"
-OUTPUT_DIR = "./lgbm_model"
+DATA_DIR   = "../data/ml2/lgbm_data"
+OUTPUT_DIR = "../data/ml2/lgbm_model"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── 加载数据 ──────────────────────────────────────────────────────────────────
@@ -40,14 +40,18 @@ valid_ds = lgb.Dataset(X_va, label=y_va, group=g_va, feature_name=feature_names,
 
 # ── 基础参数（固定） ──────────────────────────────────────────────────────────
 BASE_PARAMS = dict(
-    objective        = "lambdarank",
-    metric           = "ndcg",
+    objective        = "binary",
+    metric           = 'AUC',
+    is_unbalance     = True,
+    # objective        = "lambdarank",
+    # metric           = "ndcg",
     ndcg_eval_at     = [5, 10, 20],
     label_gain       = [0, 1],          # 二值标签: 0 irrelevant, 1 relevant
     boosting_type    = "gbdt",
     n_jobs           = -1,
     verbose          = 2,
     seed             = 42,
+    feature_pre_filter = False,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -56,8 +60,8 @@ BASE_PARAMS = dict(
 def train_default() -> lgb.Booster:
     params = {
         **BASE_PARAMS,
-        "learning_rate":    0.05,
-        "num_leaves":       63,
+        "learning_rate":    0.01,
+        "num_leaves":       32,
         "max_depth":        -1,
         "min_data_in_leaf": 20,
         "feature_fraction": 0.8,
@@ -68,7 +72,7 @@ def train_default() -> lgb.Booster:
         "lambdarank_truncation_level": 20,
     }
     callbacks = [
-        lgb.early_stopping(stopping_rounds=50, verbose=True),
+        lgb.early_stopping(stopping_rounds=100, verbose=True),
         lgb.log_evaluation(period=20),
     ]
     booster = lgb.train(
