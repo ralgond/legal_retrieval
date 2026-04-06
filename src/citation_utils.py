@@ -186,6 +186,18 @@ def parse_cc_output_citations_and_sentences(text):
                 
     return {'sentences':sentences, 'citations':[(law,idx) for law,idx in law_first_pos.items()]}
 
+def parse_cc_output_citations_and_sentences_2(text):
+    text = normalized_sr(text)
+    sentences = split_sentences(text)
+    cited_laws = extract_citations_from_text(text)  # 你的citation抽取函数, 这里就没有sr开头的art了
+
+    _l = []
+    for i, sent in enumerate(sentences):
+        for law in cited_laws:
+            if law in sent:
+                _l.append((law, i))
+                
+    return {'sentences':sentences, 'citations':_l}
 
 def build_evidence(sentences, citation_idx, window_size=3):
     """
