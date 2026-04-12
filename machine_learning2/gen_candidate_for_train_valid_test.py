@@ -56,8 +56,9 @@ valid_df = pd.read_csv("../data/valid_rewrite_001.csv")
 test_df = pd.read_csv("../data/test_rewrite_001.csv")
 
 def generate_dataset(df, query_col_name):
+    count=0
     _l = []
-    for query_id, query in tqdm(zip(train_df['query_id'].tolist(), train_df[query_col_name].tolist()), total=len(train_df)):
+    for query_id, query in tqdm(zip(df['query_id'].tolist(), df[query_col_name].tolist()), total=len(df)):
         hits1 = dense_index.search_with_score(query, top_k=retrieve_top_k)
         hits2 = sparse_index.search_with_score(query, top_k=retrieve_top_k)
      
@@ -70,6 +71,11 @@ def generate_dataset(df, query_col_name):
     
         term = (query_id, hits1_strip_text, hits2_strip_text, hits3_strip_text)
         _l.append(term)
+
+        count += 1
+        if count >= 100:
+            pass
+            
     return _l
 
 train_l = generate_dataset(train_df, 'query2')

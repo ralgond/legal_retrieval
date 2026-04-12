@@ -42,12 +42,12 @@ court_doc = [{'citation':citation, 'text':text} for citation,text in zip(court_c
 FEATURE_NAMES = [
     # ── 检索信号特征 ──────────────────────────────────────────────────────────
     "log_pos_decay",          # reranker_score * 1/log(2+idx)
-    "hit_rank_decay",         # reranker_score * 1/log(2+hit_rank)
+    # "hit_rank_decay",         # reranker_score * 1/log(2+hit_rank)
     "rr_pos_decay",           # reranker_score * 1/(1+idx)
     "dense_log_pos",          # dense_score    * 1/log(2+idx)
     "sparse_log_pos",         # sparse_score   * 1/log(2+idx)
-    "cite_freq",              # 出现次数（raw）
-    "log_cite_freq",          # log(1+freq)
+    # "cite_freq",              # 出现次数（raw）
+    # "log_cite_freq",          # log(1+freq)
     "top_hit_bonus",          # 仅 top-N hit 贡献的 log_pos_decay
     "max_score_pos",          # 单次最大 score*log_pos
     "score_sq_log_pos",       # score^2 * 1/log(2+idx)
@@ -138,11 +138,11 @@ def extract_features_for_query(
     accum: dict[str, dict] = defaultdict(lambda: {
         # 检索信号
         "log_pos_decay":       0.0,
-        "hit_rank_decay":      0.0,
+        # "hit_rank_decay":      0.0,
         "rr_pos_decay":        0.0,
         "dense_log_pos":       0.0,
         "sparse_log_pos":      0.0,
-        "cite_freq":           0,
+        # "cite_freq":           0,
         "top_hit_bonus":       0.0,
         "max_score_pos":       0.0,
         "score_sq_log_pos":    0.0,
@@ -179,11 +179,11 @@ def extract_features_for_query(
 
             # ── 检索信号 ──────────────────────────────────────────────────────
             a["log_pos_decay"]    += reranker_score * log_pos
-            a["hit_rank_decay"]   += reranker_score * hit_decay
+            # a["hit_rank_decay"]   += reranker_score * hit_decay
             a["rr_pos_decay"]     += reranker_score * rr_pos
             a["dense_log_pos"]    += dense_score * log_pos
             a["sparse_log_pos"]   += sparse_score * log_pos
-            a["cite_freq"]        += 1
+            # a["cite_freq"]        += 1
             a["score_sq_log_pos"] += (reranker_score ** 2) * log_pos
             a["sum_dense_score"]  += dense_score
             a["sum_sparse_score"] += sparse_score
@@ -227,7 +227,7 @@ def extract_features_for_query(
     cid_feat_d: dict[str, np.ndarray] = {}
 
     for cid, a in accum.items():
-        freq = a["cite_freq"]
+        # freq = a["cite_freq"]
         rs   = a["reranker_scores"]
         scl  = a["sent_char_lens"]   or [0]
         swl  = a["sent_word_lens"]   or [0]
@@ -239,12 +239,12 @@ def extract_features_for_query(
         feat_vec = np.array([
             # 检索信号（18 维）
             a["log_pos_decay"],
-            a["hit_rank_decay"],
+            # a["hit_rank_decay"],
             a["rr_pos_decay"],
             a["dense_log_pos"],
             a["sparse_log_pos"],
-            float(freq),
-            math.log(1 + freq),
+            # float(freq),
+            # math.log(1 + freq),
             a["top_hit_bonus"],
             a["max_score_pos"],
             a["score_sq_log_pos"],

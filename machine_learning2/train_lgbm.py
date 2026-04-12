@@ -40,12 +40,12 @@ valid_ds = lgb.Dataset(X_va, label=y_va, group=g_va, feature_name=feature_names,
 
 # ── 基础参数（固定） ──────────────────────────────────────────────────────────
 BASE_PARAMS = dict(
-    objective        = "binary",
-    metric           = 'AUC',
-    is_unbalance     = True,
-    # objective        = "lambdarank",
-    # metric           = "ndcg",
-    ndcg_eval_at     = [5, 10, 20],
+    # objective        = "binary",
+    # metric           = 'AUC',
+    # is_unbalance     = True,
+    objective        = "lambdarank",
+    metric           = "ndcg",
+    ndcg_eval_at     = [1, 5, 10],
     label_gain       = [0, 1],          # 二值标签: 0 irrelevant, 1 relevant
     boosting_type    = "gbdt",
     n_jobs           = -1,
@@ -69,16 +69,16 @@ def train_default() -> lgb.Booster:
         "bagging_freq":     5,
         "lambda_l1":        0.1,
         "lambda_l2":        0.1,
-        "lambdarank_truncation_level": 20,
+        "lambdarank_truncation_level": 200,
     }
     callbacks = [
-        lgb.early_stopping(stopping_rounds=100, verbose=True),
+        lgb.early_stopping(stopping_rounds=50, verbose=True),
         lgb.log_evaluation(period=20),
     ]
     booster = lgb.train(
         params,
         train_ds,
-        num_boost_round   = 1000,
+        num_boost_round   = 1,
         valid_sets        = [valid_ds],
         valid_names       = ["valid"],
         callbacks         = callbacks,
