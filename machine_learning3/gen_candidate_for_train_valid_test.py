@@ -3,9 +3,9 @@ build_dataset.py
 构造 LightGBM Learning-to-Rank candidate list。
 
 输出：
-../data/processed/ml_raw_train_candidate.pkl
-../data/processed/ml_raw_valid_candidate.pkl
-../data/processed/ml_raw_test_candidate.pkl
+../data/ml3/raw_train_candidate.pkl
+../data/ml3/raw_valid_candidate.pkl
+../data/ml3/raw_test_candidate.pkl
 
 三个文件中都包含下面数据结构：
 (query_id, List[(cc_id, dense_score), ...], List[(cc_id, sparse_score), ...], List[(cc_id, rerank_score), ...])
@@ -64,6 +64,8 @@ def generate_dataset(df, query_col_name):
      
         _hits = hits_utils.merge_hits_with_score_l_by_max(hits1, hits2)
         hit_with_score_l = reranker_utils.rerank_by_batch_chunked2(reranker, query, [hit for hit, _ in _hits])
+
+        hits3 = hit_with_score_l
     
         hits1_strip_text = [({'citation':hit['citation']}, dense_score) for hit, dense_score in hits1] # 不需要保存text
         hits2_strip_text = [({'citation':hit['citation']}, sparse_score) for hit, sparse_score in hits2]
@@ -78,15 +80,14 @@ def generate_dataset(df, query_col_name):
             
     return _l
 
-train_l = generate_dataset(train_df, 'query2')
 valid_l = generate_dataset(valid_df, 'query2')
-test_l = generate_dataset(test_df, 'query')
-
-with open("../data/processed/ml_raw_train_candidate.pkl", "wb+") as of:
-    pickle.dump(train_l, of)
-
-with open("../data/processed/ml_raw_valid_candidate.pkl", "wb+") as of:
+with open("../data/ml3/raw_valid_candidate.pkl", "wb+") as of:
     pickle.dump(valid_l, of)
-
-with open("../data/processed/ml_raw_test_candidate.pkl", "wb+") as of:
+    
+train_l = generate_dataset(train_df, 'query2')
+with open("../data/ml3/raw_train_candidate.pkl", "wb+") as of:
+    pickle.dump(train_l, of)
+    
+test_l = generate_dataset(test_df, 'query')
+with open("../data/ml3/raw_test_candidate.pkl", "wb+") as of:
     pickle.dump(test_l, of)
