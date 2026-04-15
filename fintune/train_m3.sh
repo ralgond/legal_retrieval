@@ -1,0 +1,16 @@
+torchrun --nproc_per_node 1 \
+-m FlagEmbedding.baai.bge_m3.run \
+--output_dir ../ft_data/bge-m3-lora \
+--model_name_or_path /root/.cache/modelscope/hub/models/BAAI/bge-m3/ \
+--train_data ../ft_data/bge-m3_unsupervised_data.jsonl \
+--learning_rate 2e-4 \
+--fp16 \
+--num_train_epochs 1 \
+--per_device_train_batch_size 16 \
+--use_self_distill True \
+--unified_finetuning True \
+--use_lora True \
+--lora_r 8 \
+--lora_alpha 16 \
+--lora_dropout 0.05 \
+--lora_target_modules query key value
