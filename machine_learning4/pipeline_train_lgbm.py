@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-DATA_DIR   = "../data/ml3/lgbm_data"
-OUTPUT_DIR = "../data/ml3/lgbm_model"
+DATA_DIR   = "../data/ml4/lgbm_data"
+OUTPUT_DIR = "../data/ml4/lgbm_model"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── 加载数据 ──────────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ def train_default() -> lgb.Booster:
         # "bagging_freq":     5,
         "lambda_l1":        0.1,
         "lambda_l2":        0.1,
-        "lambdarank_truncation_level": 200,
+        "lambdarank_truncation_level": 2000,
     }
     callbacks = [
         lgb.early_stopping(stopping_rounds=50, verbose=True),

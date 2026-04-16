@@ -11,7 +11,7 @@ src_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), '..', 'src'
 if src_path not in sys.path:
     sys.path.append(src_path)
 
-OUTPUT_DIR = "../data/ml3/lgbm_data"
+OUTPUT_DIR = "../data/ml4/lgbm_data"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── 加载数据 ──────────────────────────────────────────────────────────────────
@@ -22,9 +22,9 @@ court_consideration_d = dict(zip(court_consideration_df['citation'].tolist(), co
 court_doc = [{'citation':citation, 'text':text} for citation,text in zip(court_consideration_df['citation'].tolist(), court_consideration_df['text'].tolist())]
 
 import common
-train_candidate_d = common.read_candidate("../data/ml3/raw_train_candidate.pkl", court_consideration_d)
-valid_candidate_d = common.read_candidate("../data/ml3/raw_valid_candidate.pkl", court_consideration_d)
-test_candidate_d = common.read_candidate("../data/ml3/raw_test_candidate.pkl", court_consideration_d)
+train_candidate_d = common.read_candidate("../data/ml4/raw_train_candidate.pkl", court_consideration_d)
+valid_candidate_d = common.read_candidate("../data/ml4/raw_valid_candidate.pkl", court_consideration_d)
+test_candidate_d = common.read_candidate("../data/ml4/raw_test_candidate.pkl", court_consideration_d)
 
 from pipeline_common import _maxmin_normalize_hits, CC, Citation, Query, extract_features_for_query
 
