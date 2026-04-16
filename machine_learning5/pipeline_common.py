@@ -4,12 +4,16 @@ import os
 import os.path
 import sys
 import numpy as np
+import pandas as pd
 import math
 from collections import defaultdict
 
 src_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), '..', 'src'))
 if src_path not in sys.path:
     sys.path.append(src_path)
+
+idf_df = pd.read_csv("../data/idf.csv")
+idf_d = { citation : idf for citation, idf in zip(idf_df['citation'], idf_df['idf'])}
 
 def _maxmin_normalize_hits(hits):
     max_value = hits[0][1]
@@ -46,10 +50,22 @@ class Citation:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
             
     FEATURE_NAMES = [
+        'rerank_score_decay_and_sumtop3',
+        'rerank_top3_score_sum',
+        'rerank_min_rank',
+        # 'rerank_max_score',
+        'rerank_avg_score',
+        # 'rerank_score_multiply_decay_and_get_max_contribution',
+        'rerank_avg_decay_reciprocal',
+        'rerank_avg_decay_log',
+        'rerank_best_position_score',
+        'rerank_cc_score_decay_avg_reciprocal',
+        'rerank_cc_score_decay_avg_log',
+
+        'dense_top3_score_sum',
         'dense_min_rank',
         # 'dense_max_score',
         'dense_avg_score',
-        'dense_top3_score_sum',
         # 'dense_score_multiply_decay_and_get_max_contribution',
         'dense_avg_decay_reciprocal',
         'dense_avg_decay_log',
@@ -57,10 +73,10 @@ class Citation:
         'dense_cc_score_decay_avg_reciproca',
         'dense_cc_score_decay_avg_log',
 
+        'sparse_top3_score_sum',
         'sparse_min_rank',
         # 'sparse_max_score',
         'sparse_avg_score',
-        'sparse_top3_score_sum',
         # 'sparse_score_multiply_decay_and_get_max_contribution',
         'sparse_avg_decay_reciprocal',
         'sparse_avg_decay_log',
@@ -68,18 +84,9 @@ class Citation:
         'sparse_cc_score_decay_avg_reciprocal',
         'sparse_cc_score_decay_avg_log',
 
-        'rerank_min_rank',
-        # 'rerank_max_score',
-        'rerank_avg_score',
-        'rerank_top3_score_sum',
-        # 'rerank_score_multiply_decay_and_get_max_contribution',
-        'rerank_avg_decay_reciprocal',
-        'rerank_avg_decay_log',
-        'rerank_best_position_score',
-        'rerank_cc_score_decay_avg_reciprocal',
-        'rerank_cc_score_decay_avg_log',
         # 'boolean_in_dense_and_sparse',
         # 'freq_reciprocal'
+        'citation_idf'
     ]
 
     N_FEATS = len(FEATURE_NAMES)
@@ -196,6 +203,11 @@ class Citation:
 
         return {f"{from_hit_type}_cc_score_decay_avg_reciprocal": reciprocal_score, f"{from_hit_type}_cc_score_decay_avg_log":log_score}
         
+    def __extract_feature_method_7_rerank_score_decay_and_sumtop3(self):
+        l = [(cc.cc_score*1/math.log(2+cc.first_appear_sentence_index)) for cc in self.refer_cc_l if cc.from_hit_type == 'rerank']
+        l2 = sorted(l, reverse=True)
+        return {f"rerank_score_decay_and_sumtop3": sum(l2[:3])}
+
     def extract_feature(self): # return Dict[feature_name->float]
 
         dense_d = self.__extract_feature_method_1('dense')
@@ -219,6 +231,8 @@ class Citation:
         dense_d6 = self.__extract_feature_method_6_cc_score_decay_avg('dense')
         sparse_d6 = self.__extract_feature_method_6_cc_score_decay_avg('sparse')
         rerank_d6 =self.__extract_feature_method_6_cc_score_decay_avg('rerank')
+
+        rerank_d7 = self.__extract_feature_method_7_rerank_score_decay_and_sumtop3()
         
         self.dense_l = []
         self.sparse_l = []
@@ -239,6 +253,8 @@ class Citation:
             # **d4
             **dense_d5, **sparse_d5, **rerank_d5,
             **dense_d6, **sparse_d6, **rerank_d6,
+            **rerank_d7,
+            "citation_idf": idf_d.get(self.cid, 3.0)
         }
 
         return merged_method_1_dict
@@ -386,10 +402,22 @@ def extract_features_for_query(
         # freq = a["cite_freq"]
 
         feat_vec = np.array([
+            a['rerank_score_decay_and_sumtop3'],
+            a['rerank_top3_score_sum'],
+            a['rerank_min_rank'],
+            # a['rerank_max_score'] * 1./math.log(2+citation_freq.get(cid,0.)),
+            a['rerank_avg_score'],
+            # a['rerank_score_multiply_decay_and_get_max_contribution'] 
+            a['rerank_avg_decay_reciprocal'],
+            a['rerank_avg_decay_log'],
+            a['rerank_best_position_score'],
+            a['rerank_cc_score_decay_avg_reciprocal'],
+            a['rerank_cc_score_decay_avg_log'],
+
+            a['dense_top3_score_sum'],
             a['dense_min_rank'],
             # a['dense_max_score'] * 1./math.log(2+citation_freq.get(cid,0.)),
             a['dense_avg_score'],
-            a['dense_top3_score_sum']  * 1./(1+citation_freq.get(cid,0.)),
             # a['dense_score_multiply_decay_and_get_max_contribution'] 
             a['dense_avg_decay_reciprocal'],
             a['dense_avg_decay_log'],
@@ -397,10 +425,10 @@ def extract_features_for_query(
             a['dense_cc_score_decay_avg_reciprocal'],
             a['dense_cc_score_decay_avg_log'],
 
+            a['sparse_top3_score_sum'],
             a['sparse_min_rank'],
             # a['sparse_max_score'] * 1./math.log(2+citation_freq.get(cid,0.)),
             a['sparse_avg_score'],
-            a['sparse_top3_score_sum']  * 1./(1+citation_freq.get(cid,0.)),
             # a['sparse_score_multiply_decay_and_get_max_contribution'] 
             a['sparse_avg_decay_reciprocal'],
             a['sparse_avg_decay_log'],
@@ -408,16 +436,7 @@ def extract_features_for_query(
             a['sparse_cc_score_decay_avg_reciprocal'],
             a['sparse_cc_score_decay_avg_log'],
 
-            a['rerank_min_rank'],
-            # a['rerank_max_score'] * 1./math.log(2+citation_freq.get(cid,0.)),
-            a['rerank_avg_score'],
-            a['rerank_top3_score_sum']  * 1./(1+citation_freq.get(cid,0.)),
-            # a['rerank_score_multiply_decay_and_get_max_contribution'] 
-            a['rerank_avg_decay_reciprocal'],
-            a['rerank_avg_decay_log'],
-            a['rerank_best_position_score'],
-            a['rerank_cc_score_decay_avg_reciprocal'],
-            a['rerank_cc_score_decay_avg_log'],
+            a['citation_idf']
             # a['boolean_in_dense_and_sparse']
             # 1/ (1 + citation_freq.get(cid, 0.)) # 'freq_reciprocal'
         ], dtype=np.float32)
