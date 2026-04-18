@@ -51,6 +51,11 @@ class Citation:
             
     FEATURE_NAMES = [
         'rerank_score_decay_and_sumtop3',
+
+        'rerank_min_sentence_index',
+
+        'rerank_top1_score_div_top2_score',
+
         'rerank_top3_score_sum',
         'rerank_min_rank',
         # 'rerank_max_score',
@@ -86,7 +91,8 @@ class Citation:
 
         # 'boolean_in_dense_and_sparse',
         # 'freq_reciprocal'
-        'citation_idf'
+        'citation_idf',
+        'graph_scores'
     ]
 
     N_FEATS = len(FEATURE_NAMES)
@@ -139,7 +145,7 @@ class Citation:
             top3_score_sum = 0.
 
         return {
-            from_hit_type + "_min_rank" : max_score,
+            from_hit_type + "_min_rank" : min_rank,
             from_hit_type + "_max_score" : max_score,
             from_hit_type + "_avg_score" : avg_score,
             from_hit_type + "_top3_score_sum" : top3_score_sum,
@@ -208,6 +214,31 @@ class Citation:
         l2 = sorted(l, reverse=True)
         return {f"rerank_score_decay_and_sumtop3": sum(l2[:3])}
 
+    def __extract_feature_method_8_min_sentence_idx(self):
+        l = [cc.first_appear_sentence_index for cc in self.refer_cc_l if cc.from_hit_type == 'rerank']
+        return {f"rerank_min_sentence_index": min(l)}
+
+    def __extract_feature_method_9_top1_score_div_top2_score(self):
+        l = [cc.cc_score for cc in self.refer_cc_l if cc.from_hit_type == 'rerank']
+        l.sort(reverse=True)
+        if len(l) == 1:
+            return {"rerank_top1_score_div_top2_score": 0.}
+
+        try:
+            return {"rerank_top1_score_div_top2_score": l[0]/l[1]}
+        except ZeroDivisionError as e:
+            return {"rerank_top1_score_div_top2_score": 0.}
+
+    def __extract_feature_method_10_top3sum_score_div_total_score(self):
+        l = [cc.cc_score for cc in self.refer_cc_l if cc.from_hit_type == 'rerank']
+        l.sort(reverse=True)
+
+        try:
+            return {"rerank_top3sum_score_div_total_score": sum(l[:3])/sum(l)}
+        except ZeroDivisionError as e:
+            return {"rerank_top3sum_score_div_total_score": 0.}
+
+
     def extract_feature(self): # return Dict[feature_name->float]
 
         dense_d = self.__extract_feature_method_1('dense')
@@ -233,6 +264,12 @@ class Citation:
         rerank_d6 =self.__extract_feature_method_6_cc_score_decay_avg('rerank')
 
         rerank_d7 = self.__extract_feature_method_7_rerank_score_decay_and_sumtop3()
+
+        rerank_d8 = self.__extract_feature_method_8_min_sentence_idx()
+
+        rerank_d9 = self.__extract_feature_method_9_top1_score_div_top2_score()
+
+        rerank_d10 = self.__extract_feature_method_10_top3sum_score_div_total_score()
         
         self.dense_l = []
         self.sparse_l = []
@@ -254,10 +291,77 @@ class Citation:
             **dense_d5, **sparse_d5, **rerank_d5,
             **dense_d6, **sparse_d6, **rerank_d6,
             **rerank_d7,
-            "citation_idf": idf_d.get(self.cid, 3.0)
+            "citation_idf": idf_d.get(self.cid, 3.0),
+            **rerank_d8,
+            **rerank_d9,
+            # **rerank_d10,
         }
 
         return merged_method_1_dict
+
+
+def run_graph_propagation(
+    citation_id_2_citation_d,
+    cc_id_2_scores,   # dict: cc_id -> score（rerank为主）
+    cc_id_2_parsed_cc,
+    n_iter=2
+):
+    """
+    CC <-> Citation 双向传播
+    """
+
+    # 初始化
+    cc_score = {cc_id: score for cc_id, score in cc_id_2_scores.items()}
+    citation_score = {cid: 0.0 for cid in citation_id_2_citation_d.keys()}
+
+    # 构建邻接
+    cc_to_citations = {}
+    citation_to_cc = {}
+
+    for cc_id, parsed in cc_id_2_parsed_cc.items():
+        cc_to_citations[cc_id] = []
+        for cid, pos in parsed['citations']:
+            cc_to_citations[cc_id].append((cid, pos))
+
+            if cid not in citation_to_cc:
+                citation_to_cc[cid] = []
+            citation_to_cc[cid].append((cc_id, pos))
+
+    def edge_weight(score, pos):
+        return score * (1.0 / (1 + pos))
+
+    # 迭代传播
+    for _ in range(n_iter):
+
+        # CC → Citation
+        new_citation_score = {cid: 0.0 for cid in citation_score}
+
+        for cc_id, neighbors in cc_to_citations.items():
+            for cid, pos in neighbors:
+                new_citation_score[cid] += edge_weight(cc_score.get(cc_id, 0), pos)
+
+        # normalize
+        s = sum(new_citation_score.values()) + 1e-8
+        for cid in new_citation_score:
+            new_citation_score[cid] /= s
+
+        citation_score = new_citation_score
+
+        # Citation → CC
+        new_cc_score = {cc_id: 0.0 for cc_id in cc_score}
+
+        for cid, neighbors in citation_to_cc.items():
+            for cc_id, pos in neighbors:
+                new_cc_score[cc_id] += edge_weight(citation_score.get(cid, 0), pos)
+
+        # normalize
+        s = sum(new_cc_score.values()) + 1e-8
+        for cc_id in new_cc_score:
+            new_cc_score[cc_id] /= s
+
+        cc_score = new_cc_score
+
+    return citation_score
 
 class Query:
     def __init__(self, q_id):
@@ -359,7 +463,24 @@ class Query:
         for citation_id, citation in citation_id_2_citation_d.items():
             accum[citation_id] = citation.extract_feature()
 
-        return accum, citation_freq
+
+        # 用 rerank 作为主信号（最稳）
+        cc_id_2_score = {
+            cc_id: self.get_cc_rerank_norm(cc_id)
+            for cc_id in self.get_cc_id_l()
+        }
+
+        graph_scores = run_graph_propagation(
+            citation_id_2_citation_d,
+            cc_id_2_score,
+            cc_id_2_parsed_cc_d,
+            n_iter=2
+        )
+
+        return accum, citation_freq, graph_scores
+
+
+
 
 def extract_features_for_query(
         query_id: str, query: str, court_consideration_d, train_candidate_d, valid_candidate_d, test_candidate_d
@@ -393,7 +514,7 @@ def extract_features_for_query(
     q.add_norm_sparse_hits(norm_hits2)
     q.add_norm_rerank_hits(norm_hits3)
     q.assign_text_to_cc(court_consideration_d)
-    accum, citation_freq = q.extract_feature()
+    accum, citation_freq, graph_scores = q.extract_feature()
     
     # 整理为特征向量
     cid_feat_d: dict[str, np.ndarray] = {}
@@ -402,7 +523,12 @@ def extract_features_for_query(
         # freq = a["cite_freq"]
 
         feat_vec = np.array([
-            a['rerank_score_decay_and_sumtop3'],
+            a['rerank_score_decay_and_sumtop3'], # 用来排序取难样本
+
+            a['rerank_min_sentence_index'],
+
+            a['rerank_top1_score_div_top2_score'],
+
             a['rerank_top3_score_sum'],
             a['rerank_min_rank'],
             # a['rerank_max_score'] * 1./math.log(2+citation_freq.get(cid,0.)),
@@ -436,9 +562,11 @@ def extract_features_for_query(
             a['sparse_cc_score_decay_avg_reciprocal'],
             a['sparse_cc_score_decay_avg_log'],
 
-            a['citation_idf']
+            a['citation_idf'],
             # a['boolean_in_dense_and_sparse']
             # 1/ (1 + citation_freq.get(cid, 0.)) # 'freq_reciprocal'
+
+            graph_scores.get(cid, 0.0)
         ], dtype=np.float32)
         assert len(feat_vec) == Citation.N_FEATS, \
             f"Feature dim mismatch: {len(feat_vec)} vs {Citation.N_FEATS}  cid={cid}"

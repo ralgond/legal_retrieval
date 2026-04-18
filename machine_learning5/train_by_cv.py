@@ -25,15 +25,23 @@ params = {
     'ndcg_eval_at': [1, 5, 10, 20],
     'learning_rate': 0.01,
     'num_leaves': 32,
-    'max_depth': 5,
+    'max_depth': 6,
     'feature_fraction': 0.8,
     'bagging_fraction': 0.8,
     'bagging_freq': 5,
     'verbose': 2,
     'seed': 42,
 
+    'boosting_type' : "gbdt",
+    'label_gain'    : [0, 1],
+
+    "lambda_l1":        0.1,
+    "lambda_l2":        0.1,
+
     "min_data_in_leaf": 1, 
     "lambdarank_truncation_level": 200, 
+
+    "feature_pre_filter" : False,
 }
 
 

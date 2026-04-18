@@ -132,7 +132,7 @@ class Citation:
             top3_score_sum = 0.
 
         return {
-            from_hit_type + "_min_rank" : max_score,
+            from_hit_type + "_min_rank" : min_rank,
             from_hit_type + "_max_score" : max_score,
             from_hit_type + "_avg_score" : avg_score,
             from_hit_type + "_top3_score_sum" : top3_score_sum,
