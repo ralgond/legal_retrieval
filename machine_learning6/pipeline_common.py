@@ -2,6 +2,7 @@ import os
 import os.path
 import sys
 import numpy as np
+import pandas as pd
 import math
 from collections import defaultdict
 
@@ -10,6 +11,10 @@ if src_path not in sys.path:
     sys.path.append(src_path)
 
 import citation_utils
+
+idf_df = pd.read_csv("../data/idf.csv")
+idf_d = {citation:idf for citation,idf in zip(idf_df['citation'], idf_df['idf'])}
+
 
 def _maxmin_normalize_hits(hits):
     max_value = hits[0][1]
@@ -73,7 +78,14 @@ class Citation:
         'has_key_words_2_in_sentence',
         'has_key_words_3_in_sentence',
         'has_key_words_4_in_sentence',
-        'avg_sentence_char_count'
+        'has_negative_key_words_1_in_sentence',
+        'avg_sentence_char_count',
+        'idf',
+        #'rank_var',
+        #'mean_var'
+        #'score_var',
+        #'score_mean',
+        'single_in_sentence_count'
     ]
 
     N_FEATS = len(FEATURE_NAMES)
@@ -127,6 +139,28 @@ class Citation:
         for hit in self.refer_hit_l:
             has_key_words_4_in_sentence += self.query._has_key_words_4_in_sentence(hit.cc_id, self.cid)
 
+        has_negative_key_words_1_in_sentence = 0
+        for hit in self.refer_hit_l:
+            has_negative_key_words_1_in_sentence += self.query._has_negative_key_words_1_in_sentence(hit.cc_id, self.cid)
+            
+
+        single_in_sentence_count = 0
+        for hit in self.refer_hit_l:
+            single_in_sentence_count += self.query._single_in_sentence_count(hit.cc_id, self.cid)
+        # rank_l = []
+        # for hit in self.refer_hit_l:
+        #     rank_l.append(hit.hit_rank)
+        # arr = np.array(rank_l)
+        # rank_var = np.var(arr)
+        # mean_var = np.mean(arr)
+
+        score_l = []
+        for hit in self.refer_hit_l:
+            score_l.append(hit.cc_score)
+        arr = np.array(score_l)
+        score_var = np.var(arr)
+        score_mean = np.mean(arr)
+        
 
         all_sentence = []
         for hit in self.refer_hit_l:
@@ -147,7 +181,14 @@ class Citation:
             'has_key_words_2_in_sentence': has_key_words_2_in_sentence,
             'has_key_words_3_in_sentence': has_key_words_3_in_sentence,
             'has_key_words_4_in_sentence': has_key_words_4_in_sentence,
-            'avg_sentence_char_count': avg_sentence_char_count
+            'has_negative_key_words_1_in_sentence':has_negative_key_words_1_in_sentence,
+            'avg_sentence_char_count': avg_sentence_char_count,
+            'idf': idf_d.get(self.cid, 1.0),
+            #'rank_var': rank_var,
+            #'mean_var': mean_var
+            #'score_var':score_var,
+            #'score_mean':score_mean
+            'single_in_sentence_count':single_in_sentence_count
         }
         
 class Query:
@@ -245,6 +286,30 @@ class Query:
                     ret += 1
         return ret
 
+    def _has_negative_key_words_1_in_sentence(self, cc_id, cid):
+        ret = 0
+        key_words = ['vgl.', 'siehe auch', 's.a.', 'a.M.', 'anderer Meinung']
+        cc = self.cc_d[cc_id]
+        index_l = [index for _cid, index in cc.parsed_cc['citations'] if _cid == cid]
+        for index in index_l:
+            s = cc.parsed_cc['sentences'][index]
+            for kw in key_words:
+                if kw.lower() in s.lower():
+                    ret -= 1
+        return ret
+
+    def _single_in_sentence_count(self, cc_id, cid):
+        ret = 0
+        cc = self.cc_d[cc_id]
+        index_l = [index for _cid, index in cc.parsed_cc['citations'] if _cid == cid]
+        for index in index_l:
+            s = cc.parsed_cc['sentences'][index]
+            citation_list = citation_utils.extract_citations_from_text(s)
+            if len(citation_list) == 1:
+                ret += 1
+        return ret
+
+
     def _get_sentences(self, cc_id, cid):
         cc = self.cc_d[cc_id]
         index_l = [index for _cid, index in cc.parsed_cc['citations'] if _cid == cid]
@@ -294,7 +359,14 @@ def extract_features_for_query(
             a['has_key_words_2_in_sentence'],
             a['has_key_words_3_in_sentence'],
             a['has_key_words_4_in_sentence'],
-            a['avg_sentence_char_count']
+            a['has_negative_key_words_1_in_sentence'],
+            a['avg_sentence_char_count'],
+            a['idf'],
+            #a['rank_var'],
+            #a['mean_var']
+            #a['score_var'],
+            #a['score_mean']
+            a['single_in_sentence_count']
         ], dtype=np.float32)
         assert len(feat_vec) == Citation.N_FEATS, \
             f"Feature dim mismatch: {len(feat_vec)} vs {Citation.N_FEATS}  cid={cid}"

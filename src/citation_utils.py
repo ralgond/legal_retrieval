@@ -1,4 +1,5 @@
 import re
+from typing import List, Tuple
 import math
 from collections import defaultdict
 import citation_utils2
@@ -32,6 +33,54 @@ def extract_citations_from_text(text: str) -> list[str]:
     citations.extend(art_matches)
     
     return list(set(citations))
+
+def extract_pcitations_from_text(text: str) -> list[str]:
+    """Extract pcitations from any text (tool output or final answer)."""
+    citations = []
+    
+    # SR pattern: SR followed by number (optionally with article)
+    matches = re.findall(
+        r"CITE_START_((?:(?!CITE_START_).)*?)_CITE_END",
+        text,
+        re.IGNORECASE
+    )
+
+    citations.extend(matches)
+    
+    return list(set(citations))
+
+def extract_citations_from_text_with_span(text: str) -> List[Tuple[str, int, int]]:
+    """
+    Extract citations with span information.
+
+    Returns:
+        List of (citation_text, start_idx, end_idx)
+    """
+    results = []
+    seen = set()  # 用于去重 (text, start, end)
+
+    patterns = [
+        # SR pattern
+        r"SR\s*\d{3}(?:\.\d+)?(?:\s+Art\.?\s*\d+[a-z]?)?",
+        
+        # BGE pattern
+        r"BGE\s+\d{1,3}\s+[IVX]+[a-z]?\s+\d+(?:\s+E\.\s*\d+[a-z]?)?",
+        
+        # Art pattern
+        r"Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)?[A-Z]{2,}"
+    ]
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            span = match.span()
+            citation = match.group().strip()
+
+            key = (citation, span[0], span[1])
+            if key not in seen:
+                seen.add(key)
+                results.append((citation, span[0], span[1]))
+
+    return results
 
 def extract_citations_and_type_from_text(text: str) -> list[str]:
     """Extract citations from any text (tool output or final answer)."""
@@ -77,6 +126,36 @@ def split_sentences(text: str) -> list[str]:
     正确断句：先将citation中的句号保护起来，断句后再还原。
     """
     citations = extract_citations_from_text(text)
+    
+    # 1. 用占位符替换所有citation，避免其中的句号干扰断句
+    placeholder_map = {}
+    protected = text
+    for i, citation in enumerate(citations):
+        placeholder = f"__CITATION_{i}__"
+        placeholder_map[placeholder] = citation
+        # 替换文本中所有该citation的出现
+        protected = protected.replace(citation, placeholder)
+    
+    # 2. 在保护后的文本上断句
+    # 匹配句末标点：.  !  ? 后跟空白或结尾
+    raw_sentences = re.split(r'(?<=[.!?])\s+', protected.strip())
+    
+    # 3. 还原每个句子中的citation占位符
+    sentences = []
+    for s in raw_sentences:
+        for placeholder, original in placeholder_map.items():
+            s = s.replace(placeholder, original)
+        s = s.strip()
+        if s:
+            sentences.append(s)
+    
+    return sentences
+
+def p_split_sentences(text: str) -> list[str]:
+    """
+    正确断句：先将citation中的句号保护起来，断句后再还原。
+    """
+    citations = extract_pcitations_from_text(text)
     
     # 1. 用占位符替换所有citation，避免其中的句号干扰断句
     placeholder_map = {}
@@ -215,3 +294,35 @@ def remove_citation_from_text(text):
         text = text.replace(c, "")
     return text
 
+def map_citation_2_pcitation(citation):
+    return "CITE_START_" + citation.replace(" ", "_")+"_CITE_END"
+
+def map_pcitation_2_citation(pcitation):
+    assert pcitation.startswith("CITE_START_")
+    return pcitation.replace("CITE_START_", "").replace("_CITE_END", "").replace("_", " ")
+
+def extract_pcitations_from_text_with_span(text: str) -> List[Tuple[str, int, int]]:
+    """
+    Extract citations with span information.
+
+    Returns:
+        List of (citation_text, start_idx, end_idx)
+    """
+    results = []
+    seen = set()  # 用于去重 (text, start, end)
+
+    patterns = [
+        r"CITE_START_((?:(?!CITE_START_).)*?)_CITE_END"
+    ]
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            span = match.span()
+            citation = match.group().strip()
+
+            key = (citation, span[0], span[1])
+            if key not in seen:
+                seen.add(key)
+                results.append((citation, span[0], span[1]))
+
+    return results
