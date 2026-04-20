@@ -21,7 +21,7 @@ from FlagEmbedding import BGEM3FlagModel
 # 配置
 # ─────────────────────────────────────────────
 
-MODEL_NAME  = "BAAI/bge-m3"
+MODEL_NAME  = "/root/.cache/modelscope/hub/models/BAAI/bge-m3"
 INDEX_FILE  = "../data/anchor_method/decisions.faiss"
 META_FILE   = "../data/anchor_method/decisions_meta.jsonl"
 INPUT_JSONL = "../data/anchor_method/erwaegungen.jsonl"

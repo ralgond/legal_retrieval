@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from collections import defaultdict
+from tqdm import tqdm
 
 src_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), '..', 'src'))
 if src_path not in sys.path:
@@ -26,7 +27,7 @@ from legal_search import SearchResult, build_index, LegalSearchEngine
 
 core_sent_df = pd.read_csv("core_sentence.csv")
 core_sentences = []
-for citation, text in zip(core_sent_df['citation'], core_sent_df['text']):
+for citation, text in zip(core_sent_df['citation'], core_sent_df['sentence']):
     core_sentences.append((citation, text))
 build_index(use_core_sentences=core_sentences)
 
@@ -39,7 +40,7 @@ court_consideration_d = dict(zip(court_consideration_df['citation'].tolist(), co
 print("Loaded cc...")
 
 import common
-valid_candidate_d = common.read_candidate("../data/ml3/raw_valid_candidate.pkl", court_consideration_d)
+valid_candidate_d = common.read_candidate("../data/anchor_method/raw_valid_candidate.pkl", court_consideration_d)
 
 
 # ── 推理主循环 ────────────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ def text_2_sentences_which_contain_citation(query_id):
     cc_l = valid_candidate_d[query_id]['rerank']
 
     ret = []
-    for cc in cc_l:
+    for cc,score in cc_l:
         sents = citation_utils.split_sentences(cc['text'])
         for sent in sents:
             cids = citation_utils.extract_citations_from_text(sent)
@@ -73,20 +74,34 @@ for i, (query_id, query, gold_citations) in enumerate(
 
     gold_set = set(gold_citations.split(';'))
     gold_l.append(list(gold_set))
-    print(f"[{i+1}/{len(valid_df)}] query_id={query_id}")
+    
 
     sents = text_2_sentences_which_contain_citation(query_id)
 
-    cid_l = []
+    cid_score_l = []
     for sent in sents:
         results = legal_search_engine.search(sent, top_k=3)
         max_score = results[0].score
         if max_score> threshold_score:
             cids = citation_utils.extract_citations_from_text(sent)
-            cid_l.extend(cids)
+            for cid in cids:
+                cid_score_l.append((cid,max_score))
+
+    cid_score_d = {}
+    for cid,score in cid_score_l:
+        if cid not in cid_score_d:
+            cid_score_d[cid] = score
+        elif cid_score_d[cid] < score:
+            cid_score_d[cid] = score
+            
+    l = [(cid,score)for cid,score in cid_score_d.items()]
+    l.sort(key=lambda x:x[1], reverse=True)
+
+    cid_l = [cid for cid,_ in l]
     
-    cid_l = list(set(cid_l))
     result_l.append(cid_l)
+
+    print(f"[{i+1}/{len(valid_df)}] query_id={query_id}, cid_l.len={len(cid_l)}")
 
 # ── 评估 ──────────────────────────────────────────────────────────────────────
 recall    = metric_utils.cal_recall(result_l, gold_l)

@@ -49,7 +49,7 @@ reranker = FlagReranker('/root/.cache/modelscope/hub/models/BAAI/bge-reranker-v2
 
 print("Models loaded.")
 
-retrieve_top_k = 100
+retrieve_top_k = 500
 
 train_df = pd.read_csv("../data/train_rewrite_001.csv")
 valid_df = pd.read_csv("../data/valid_rewrite_001.csv")
@@ -81,13 +81,13 @@ def generate_dataset(df, query_col_name):
     return _l
 
 valid_l = generate_dataset(valid_df, 'query2')
-with open("../data/ml3/raw_valid_candidate.pkl", "wb+") as of:
+with open("../data/ml5/raw_valid_candidate.pkl", "wb+") as of:
     pickle.dump(valid_l, of)
     
 train_l = generate_dataset(train_df, 'query2')
-with open("../data/ml3/raw_train_candidate.pkl", "wb+") as of:
+with open("../data/ml5/raw_train_candidate.pkl", "wb+") as of:
     pickle.dump(train_l, of)
     
 test_l = generate_dataset(test_df, 'query')
-with open("../data/ml3/raw_test_candidate.pkl", "wb+") as of:
+with open("../data/ml5/raw_test_candidate.pkl", "wb+") as of:
     pickle.dump(test_l, of)
