@@ -15,10 +15,10 @@ client = OpenAI(
 )
 
 
-court_consideration_df = pd.read_csv("../data/court_considerations.csv")
-print("cc loaded.")
+erwaegungen_df = pd.read_csv("../data/anchor_method/erwaegungen.csv")
+print("erwaegungen loaded.")
 
-sampled_cc_df = court_consideration_df.sample(100)
+sampled_cc_df = erwaegungen_df.sample(100)
 
 citation_l = []
 result_l = []
