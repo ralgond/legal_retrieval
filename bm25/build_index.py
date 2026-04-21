@@ -2,13 +2,24 @@ import pandas as pd
 import bm25s
 import Stemmer  # optional: for stemming
 
+from compound_split import Splitter
+
+splitter = Splitter()
+
+def compound_split_(text):
+    tokens = text.split()
+    ret = []
+    for token in tokens:
+        ret.extend(splitter.split(token))
+    return ' '.join(ret)
+
 # Create your corpus here
 corpus = []
 cc_df = pd.read_csv("../data/court_considerations.csv")
 print("cc_df loaded.")
 court_doc = [{'citation':citation, 'text':text} for citation,text in zip(cc_df['citation'], cc_df['text'])]
 for d in court_doc:
-    corpus.append(d['text'])
+    corpus.append(compound_split_(d['text']))
 
 # optional: create a stemmer
 stemmer = Stemmer.Stemmer("german")
@@ -23,9 +34,9 @@ retriever.index(corpus_tokens)
 # You can save the arrays to a directory...
 retriever.save("../data/bm25/cc")
 
-
 # Query the corpus
 query = "does the fish purr like a cat?"
+
 query_tokens = bm25s.tokenize(query, stemmer=stemmer)
 
 # Get top-k results as a tuple of (doc ids, scores). Both are arrays of shape (n_queries, k).

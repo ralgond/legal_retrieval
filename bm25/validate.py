@@ -36,22 +36,31 @@ import metric_utils
 # optional: create a stemmer
 stemmer = Stemmer.Stemmer("german")
 
+v_qid_2_query_list = defaultdict(list)
+valid_df2 = pd.read_csv("../data/valid_rewrite_002.csv")
+for query_id, query in zip(valid_df2['query_id'], valid_df2['query']):
+    v_qid_2_query_list[query_id].append(query)
+
+for query_id, query in v_qid_2_query.items():
+    v_qid_2_query_list[query_id].append(query)
 
 v_qid_2_predict = {}
-for query_id, query in v_qid_2_query.items():
+for query_id, query_list in v_qid_2_query_list.items():
     cid_set = set()
     
-    query_tokens = bm25s.tokenize(query, stemmer=stemmer)
+    for query in query_list:
+        query_tokens = bm25s.tokenize(query, stemmer=stemmer)
 
-    results, scores = retriever.retrieve(query_tokens, k=100)
+        results, scores = retriever.retrieve(query_tokens, k=500)
 
-    for i in range(results.shape[1]):
-        idx, score = results[0, i], scores[0, i]
-        # print(f"Rank {i+1} (score: {score:.2f}): {doc}")
-        text = court_doc[idx]['text']
-        cids = citation_utils.extract_citations_from_text(text)
-        for cid in cids:
-            cid_set.add(cid)
+        for i in range(results.shape[1]):
+            idx, score = results[0, i], scores[0, i]
+            # print(f"Rank {i+1} (score: {score:.2f}): {doc}")
+            text = court_doc[idx]['text']
+            cids = citation_utils.extract_citations_from_text(text)
+            for cid in cids:
+                cid_set.add(cid)
+
     v_qid_2_predict[query_id] = cid_set
 
 result_l = []
