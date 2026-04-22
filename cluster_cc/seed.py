@@ -17,6 +17,7 @@ if src_path not in sys.path:
     sys.path.append(src_path)
 
 import citation_utils
+from embedding_utils import BGEEmbedder
 
 cc_df = pd.read_csv("../data/court_considerations.csv")
 corpus = []
@@ -33,11 +34,11 @@ assert len(corpus) == len(set(parent_idx_l))
 
 N = embeddings.shape[0]
 D = embeddings.shape[1]  # 1024
-K = 500
+K = 200
 print(f"共 {N} 条文档，embedding 维度 {D}，聚类数 {K}")
 
 embeddings = np.ascontiguousarray(embeddings.astype(np.float32))
-faiss.normalize_L2(embeddings)
+# faiss.normalize_L2(embeddings)
 print("embedding loaded.")
 
 kmeans = faiss.Kmeans(d=D, k=K, gpu=False, verbose=True, niter=20)
@@ -70,11 +71,11 @@ print("向量索引建完")
 # ─────────────────────────────────────────
 import Stemmer
 stemmer = Stemmer.Stemmer("german")
-print("建 BM25 索引...")
-tokenized_corpus = bm25s.tokenize(corpus, stopwords="de", stemmer=stemmer)  # 德语停用词
-bm25_index = bm25s.BM25()
-bm25_index.index(tokenized_corpus)
-print("BM25 索引建完")
+# print("建 BM25 索引...")
+# tokenized_corpus = bm25s.tokenize(corpus, stopwords="de", stemmer=stemmer)  # 德语停用词
+# bm25_index = bm25s.BM25()
+# bm25_index.index(tokenized_corpus)
+# print("BM25 索引建完")
 
 # ─────────────────────────────────────────
 # 6. 检索函数
@@ -88,7 +89,6 @@ def retrieve(
     seed_k: int = 100,       # 向量检索种子数量
     min_cluster_hits: int = 5,  # 簇扩展的最低门槛
     top_clusters: int = 3,   # 最多扩展几个簇,
-    result_l = []
 ) -> list[dict]:
     """
     query_text:      查询文本（用于BM25）
@@ -98,7 +98,7 @@ def retrieve(
 
     # ── Step 1: 向量检索 top seed_k 篇种子文档 ──
     q = query_embedding.astype(np.float32).reshape(1, -1)
-    faiss.normalize_L2(q)
+    # faiss.normalize_L2(q)
     _, seed_ids = vec_index.search(q, seed_k)
     seed_ids = seed_ids.flatten()
 
@@ -119,7 +119,7 @@ def retrieve(
         candidate_ids.update(cluster_to_docs[cid])
 
     candidate_ids = list(candidate_ids)
-    candidate_corpus = [corpus[i] for i in candidate_ids]
+    candidate_corpus = [corpus[parent_idx_l[i]] for i in candidate_ids]
     print(f"候选文档数：{len(candidate_corpus)}（种子{seed_k} + 簇扩展）")
 
     # 判断下召回率
@@ -128,7 +128,7 @@ def retrieve(
         _cid_l = citation_utils.extract_citations_from_text(text)
         for cid in _cid_l:
             citation_id_l.append(cid)
-    result_l.append(list(set(citation_id_l)))
+    result_l = list(set(citation_id_l))
 
     # ── Step 4: BM25 在候选集内精排 ──
     tokenized_query = bm25s.tokenize([query_text], stopwords="de")
@@ -157,27 +157,40 @@ def retrieve(
 
     return final_results, result_l
 
+import metric_utils
+
 if __name__ == "__main__":
-    # 假设你已经有 query 的 embedding
-    # query_emb = your_encoder.encode("Vertragsverletzung Schadensersatz")
+    recall_l = []
+    gold_l = []
 
-    for query_id, query in 
+    embedder = BGEEmbedder('/root/.cache/modelscope/hub/models/BAAI/bge-m3')
     
-    query_text = "Vertragsverletzung Schadensersatz"
-    query_emb = np.random.randn(D).astype(np.float32)  # 替换成真实 embedding
+    valid_df = pd.read_csv("../data/valid_rewrite_001.csv")
+    for query_id, query_text, gold_citations in zip(valid_df['query_id'], valid_df['query2'], valid_df['gold_citations']):
+        query_emb = embedder.encode(query_text).astype(np.float32)
 
-    results, result_l = retrieve(
-        query_id='valid_001',
-        query_text=query_text,
-        query_embedding=query_emb,
-        top_k=100,
-        seed_k=100,
-        min_cluster_hits=5,
-        top_clusters=3,
-    )
+        results, result_l = retrieve(
+            query_id=query_id,
+            query_text=query_text,
+            query_embedding=query_emb,
+            top_k=100,
+            seed_k=100,
+            min_cluster_hits=5,
+            top_clusters=3,
+        )
 
-    for i, r in enumerate(results[:5]):
-        print(f"#{i+1} [doc_id={r['doc_id']}] score={r['bm25_score']:.4f}")
-        print(f"     {r['text'][:100]}...")
+        # for i, r in enumerate(results[:5]):
+        #     print(f"#{i+1} [doc_id={r['doc_id']}] score={r['bm25_score']:.4f}")
+        #     print(f"     {r['text'][:100]}...")
+    
+        recall_l.append(result_l)
+        gold_l.append(gold_citations.split(";"))
 
-    print(result_l)
+    recall = metric_utils.cal_recall(recall_l, gold_l)
+    print(recall)
+
+    
+
+
+
+    
