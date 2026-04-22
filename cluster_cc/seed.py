@@ -158,10 +158,15 @@ def retrieve(
     return final_results, result_l
 
 import metric_utils
+import score_citation
 
 if __name__ == "__main__":
     recall_l = []
+    sorted_citation_id_l_l = []
     gold_l = []
+
+    idf_df = pd.read_csv("../data/idf.csv")
+    idf_d = {citation:idf for citation,idf in zip(idf_df['citation'], idf_df['idf'])}
 
     embedder = BGEEmbedder('/root/.cache/modelscope/hub/models/BAAI/bge-m3')
     
@@ -173,11 +178,23 @@ if __name__ == "__main__":
             query_id=query_id,
             query_text=query_text,
             query_embedding=query_emb,
-            top_k=100,
+            top_k=10000,
             seed_k=100,
             min_cluster_hits=5,
             top_clusters=3,
         )
+
+        sorted_citation_and_score_l = score_citation.score_citation(results, idf_d)
+        sorted_citation_id_l_l.append([citation for citation,_ in sorted_citation_and_score_l])
+
+        citation_id_l = []
+        for r in results:
+            # 判断下召回率
+            _cid_l = citation_utils.extract_citations_from_text(r['text'])
+            for cid in _cid_l:
+                citation_id_l.append(cid)
+        result_l = list(set(citation_id_l))
+            
 
         # for i, r in enumerate(results[:5]):
         #     print(f"#{i+1} [doc_id={r['doc_id']}] score={r['bm25_score']:.4f}")
@@ -188,6 +205,14 @@ if __name__ == "__main__":
 
     recall = metric_utils.cal_recall(recall_l, gold_l)
     print(recall)
+
+    # ── 评估 ──────────────────────────────────────────────────────────────────────
+    for TOP_K in [5,7,10,12,15,17,20,22,25,27,30,33,35,37,40]:
+        result_l2 = [r[:TOP_K] for r in sorted_citation_id_l_l]
+        recall    = metric_utils.cal_recall(result_l2, gold_l)
+        precision = metric_utils.cal_precision(result_l2, gold_l)
+        print(f"[{TOP_K}] Recall@{TOP_K}:{recall:.4f}, Precision:{precision:.4f}, F1:{2*recall*precision/(recall+precision):.4f}")
+
 
     
 
