@@ -34,7 +34,7 @@ assert len(corpus) == len(set(parent_idx_l))
 
 N = embeddings.shape[0]
 D = embeddings.shape[1]  # 1024
-K = 200
+K = 1000
 print(f"共 {N} 条文档，embedding 维度 {D}，聚类数 {K}")
 
 embeddings = np.ascontiguousarray(embeddings.astype(np.float32))
