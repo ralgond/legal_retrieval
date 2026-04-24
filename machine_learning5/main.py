@@ -5,7 +5,7 @@ Demo：用你的JSON格式数据 + valid早停 的完整流程
 import json
 import tempfile
 import os
-from citation_gold_classifier import DataLoader, CitationGoldClassifier
+from citation_gold_classifier_with_scores import DataLoader, CitationGoldClassifier
 
 # ── 构造合成train/valid数据（模拟你的JSON格式）──────────────────────────────
 
