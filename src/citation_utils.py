@@ -250,12 +250,6 @@ def remove_citation_from_text(text):
         text = text.replace(c, "")
     return text
 
-def map_citation_2_pcitation(citation):
-    return "CITE_START_" + citation.replace(" ", "_")+"_CITE_END"
-
-def map_pcitation_2_citation(pcitation):
-    assert pcitation.startswith("CITE_START_")
-    return pcitation.replace("CITE_START_", "").replace("_CITE_END", "").replace("_", " ")
 
 def extract_pcitations_from_text_with_span(text: str) -> List[Tuple[str, int, int]]:
     """
