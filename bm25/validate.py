@@ -37,12 +37,12 @@ import metric_utils
 stemmer = Stemmer.Stemmer("german")
 
 v_qid_2_query_list = defaultdict(list)
-valid_df2 = pd.read_csv("../data/valid_rewrite_002.csv")
+valid_df2 = pd.read_csv("../data/valid_10variants_2.csv")
 for query_id, query in zip(valid_df2['query_id'], valid_df2['query']):
     v_qid_2_query_list[query_id].append(query)
 
-for query_id, query in v_qid_2_query.items():
-    v_qid_2_query_list[query_id].append(query)
+# for query_id, query in v_qid_2_query.items():
+#     v_qid_2_query_list[query_id].append(query)
 
 v_qid_2_predict = {}
 for query_id, query_list in v_qid_2_query_list.items():

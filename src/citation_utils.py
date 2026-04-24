@@ -34,20 +34,6 @@ def extract_citations_from_text(text: str) -> list[str]:
     
     return list(set(citations))
 
-def extract_pcitations_from_text(text: str) -> list[str]:
-    """Extract pcitations from any text (tool output or final answer)."""
-    citations = []
-    
-    # SR pattern: SR followed by number (optionally with article)
-    matches = re.findall(
-        r"CITE_START_((?:(?!CITE_START_).)*?)_CITE_END",
-        text,
-        re.IGNORECASE
-    )
-
-    citations.extend(matches)
-    
-    return list(set(citations))
 
 def extract_citations_from_text_with_span(text: str) -> List[Tuple[str, int, int]]:
     """
@@ -151,36 +137,6 @@ def split_sentences(text: str) -> list[str]:
     
     return sentences
 
-def p_split_sentences(text: str) -> list[str]:
-    """
-    正确断句：先将citation中的句号保护起来，断句后再还原。
-    """
-    citations = extract_pcitations_from_text(text)
-    
-    # 1. 用占位符替换所有citation，避免其中的句号干扰断句
-    placeholder_map = {}
-    protected = text
-    for i, citation in enumerate(citations):
-        placeholder = f"__CITATION_{i}__"
-        placeholder_map[placeholder] = citation
-        # 替换文本中所有该citation的出现
-        protected = protected.replace(citation, placeholder)
-    
-    # 2. 在保护后的文本上断句
-    # 匹配句末标点：.  !  ? 后跟空白或结尾
-    raw_sentences = re.split(r'(?<=[.!?])\s+', protected.strip())
-    
-    # 3. 还原每个句子中的citation占位符
-    sentences = []
-    for s in raw_sentences:
-        for placeholder, original in placeholder_map.items():
-            s = s.replace(placeholder, original)
-        s = s.strip()
-        if s:
-            sentences.append(s)
-    
-    return sentences
-    
 def compute_citation_score_with_sentence_pos(candidates_with_scores, decay="reciprocal"):
     """
     candidates_with_scores: [(consideration_text, reranker_score), ...]

@@ -6,20 +6,13 @@ from compound_split import Splitter
 
 splitter = Splitter()
 
-def compound_split_(text):
-    tokens = text.split()
-    ret = []
-    for token in tokens:
-        ret.extend(splitter.split(token))
-    return ' '.join(ret)
-
 # Create your corpus here
 corpus = []
 cc_df = pd.read_csv("../data/court_considerations.csv")
 print("cc_df loaded.")
 court_doc = [{'citation':citation, 'text':text} for citation,text in zip(cc_df['citation'], cc_df['text'])]
 for d in court_doc:
-    corpus.append(compound_split_(d['text']))
+    corpus.append(d['text'])
 
 # optional: create a stemmer
 stemmer = Stemmer.Stemmer("german")
