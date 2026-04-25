@@ -52,6 +52,13 @@ class CitationInstance:
 
     is_bge: int = 0
 
+    total_citations_in_cc: int = 0
+    citation_density: float = 0.0
+
+    is_isolated:          int = 0
+    # in_parenthesis:       int = 0
+    # n_citations_in_ctx:   int = 0
+
     is_gold: int = 0
 
 
@@ -94,6 +101,10 @@ class CitationExtractor:
         seen: set[str] = set()
         instances: list[CitationInstance] = []
 
+        total_citations_in_cc = len(freq_map)   # CC内不同citation的种数
+        citation_density = total_citations_in_cc / max(total_sents, 1)  # 每句平均citation数
+
+
         for sent_idx, sent in enumerate(sentences):
             for m in self.CITATION_RE.finditer(sent):
                 cit_id = self._normalize(m.group(0))
@@ -101,6 +112,21 @@ class CitationExtractor:
                     continue
                 seen.add(cit_id)
                 pre, post = self._context(sentences, sent_idx)
+
+                ctx = pre + " " + sent + " " + post
+
+                # ── citation role features ──────────────────────
+                n_cit_in_ctx = len(self.CITATION_RE.findall(ctx))
+                is_isolated  = int(n_cit_in_ctx == 1)
+
+                # 检查 citation 是否出现在括号内
+                in_paren = False
+                for par_m in re.finditer(r'\(([^)]{0,200})\)', ctx):
+                    if cit_id[:6].lower() in par_m.group(1).lower():
+                        in_paren = True
+                        break
+                # ────────────────────────────────────────────────
+
                 instances.append(CitationInstance(
                     citation_id=cit_id,
                     cc_id=cc_id,
@@ -113,6 +139,11 @@ class CitationExtractor:
                     dense_score=dense_score,
                     sparse_score=sparse_score,
                     rerank_score=rerank_score,
+                    total_citations_in_cc=total_citations_in_cc,
+                    citation_density=citation_density,
+                    is_isolated=is_isolated,
+                    # in_parenthesis=int(in_paren),
+                    # n_citations_in_ctx=n_cit_in_ctx,
                     is_gold=int(cit_id in gold_normalized),
                 ))
         return instances
@@ -143,6 +174,16 @@ def _safe_rerank(r):
     if random.random() < 0.1:
         return 0.0
     return r
+
+def _safe_dense(d):
+    if random.random() < 0.1:
+        return 0.0
+    return d
+
+def _safe_sparse(s):
+    if random.random() < 0.1:
+        return 0.0
+    return s
 
 class CitationFeatureBuilder:
     POSITIVE_KW = [
@@ -176,6 +217,8 @@ class CitationFeatureBuilder:
             "freq_raw", "freq_log", "freq_normalized",
             "ctx_pos_kw", "ctx_neg_kw", "ctx_kw_ratio",
             "ctx_pre_len", "ctx_post_len",
+            "total_citations_in_cc", "citation_density",
+            "is_isolated" #, "in_parenthesis", "n_citations_in_ctx",  # 新增
         ]
         return base + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
 
@@ -186,7 +229,7 @@ class CitationFeatureBuilder:
         ctx = (inst.preceding_text + " " + inst.following_text).lower()
         pos_kw = sum(1 for kw in self.POSITIVE_KW if kw in ctx)
         neg_kw = sum(1 for kw in self.NEGATIVE_KW if kw in ctx)
-        d, s, r = inst.dense_score, inst.sparse_score, _safe_rerank(inst.rerank_score)
+        d, s, r = _safe_dense(inst.dense_score), _safe_sparse(inst.sparse_score), _safe_rerank(inst.rerank_score)
         base = [
             d, s, r,
             d * r, s * r, d + s, r - d,
@@ -200,6 +243,11 @@ class CitationFeatureBuilder:
             pos_kw / (pos_kw + neg_kw + 1),
             float(len(inst.preceding_text.split())),
             float(len(inst.following_text.split())),
+            float(inst.total_citations_in_cc),
+            inst.citation_density,
+            float(inst.is_isolated),        # 新增
+            # float(inst.in_parenthesis),     # 新增
+            # float(inst.n_citations_in_ctx), # 新增
         ]
         return base + self._tfidf(inst.preceding_text + " " + inst.following_text)
 
@@ -233,131 +281,131 @@ class CitationFeatureBuilder:
     def _tok(self, text):
         return re.findall(r"\b[a-züäöA-ZÜÄÖ]{3,}\b", text.lower())
 
-from transformers import AutoTokenizer, AutoModel
-import torch
-import torch.nn.functional as F
+# from transformers import AutoTokenizer, AutoModel
+# import torch
+# import torch.nn.functional as F
 
-class BertCitationFeatureBuilder(CitationFeatureBuilder):
-    """
-    用 BERT encoder 替换 TF-IDF。
-    其余手工特征（检索分数、位置、关键词等）保持不变。
-    继承父类只是为了复用 feature_names() 和 _vec() 的非TF-IDF部分。
-    """
+# class BertCitationFeatureBuilder(CitationFeatureBuilder):
+#     """
+#     用 BERT encoder 替换 TF-IDF。
+#     其余手工特征（检索分数、位置、关键词等）保持不变。
+#     继承父类只是为了复用 feature_names() 和 _vec() 的非TF-IDF部分。
+#     """
 
-    def __init__(self, model_name: str = "deepset/gbert-base", 
-                 batch_size: int = 64, device: str = None):
-        super().__init__()
-        self.model_name = model_name
-        self.batch_size = batch_size
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = None
-        self.bert = None
-        self._emb_dim = None
+#     def __init__(self, model_name: str = "deepset/gbert-base", 
+#                  batch_size: int = 64, device: str = None):
+#         super().__init__()
+#         self.model_name = model_name
+#         self.batch_size = batch_size
+#         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+#         self.tokenizer = None
+#         self.bert = None
+#         self._emb_dim = None
 
-    def fit(self, instances: list[CitationInstance]):
-        # BERT 不需要fit，但要在这里初始化模型
-        # 沿用父类接口，保持调用方不变
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.bert = AutoModel.from_pretrained(self.model_name).to(self.device)
-        self.bert.eval()
+#     def fit(self, instances: list[CitationInstance]):
+#         # BERT 不需要fit，但要在这里初始化模型
+#         # 沿用父类接口，保持调用方不变
+#         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+#         self.bert = AutoModel.from_pretrained(self.model_name).to(self.device)
+#         self.bert.eval()
 
-        # 先encode，再fit PCA
-        texts = [
-            inst.preceding_text + " [SEP] " + inst.following_text
-            for inst in instances
-        ]
-        bert_feats = self._encode_texts(texts)        # ← 这行不能省
+#         # 先encode，再fit PCA
+#         texts = [
+#             inst.preceding_text + " [SEP] " + inst.following_text
+#             for inst in instances
+#         ]
+#         bert_feats = self._encode_texts(texts)        # ← 这行不能省
     
-        self.pca = PCA(n_components=64)
-        self.pca.fit(bert_feats)                      # ← fitOnly，不transform
+#         self.pca = PCA(n_components=64)
+#         self.pca.fit(bert_feats)                      # ← fitOnly，不transform
     
-        # 确认维度
-        self._emb_dim = 64
-        return self
+#         # 确认维度
+#         self._emb_dim = 64
+#         return self
 
-    def transform(self, instances: list[CitationInstance]) -> np.ndarray:
-        # 手工特征（父类 _vec，不含TF-IDF部分）
-        hand_feats = np.array(
-            [self._vec_no_tfidf(inst) for inst in instances], 
-            dtype=np.float32
-        )
-        # BERT特征
-        texts = [
-            inst.preceding_text + " [SEP] " + inst.following_text 
-            for inst in instances
-        ]
-        bert_feats = self._encode_texts(texts)   # (N, emb_dim)
+#     def transform(self, instances: list[CitationInstance]) -> np.ndarray:
+#         # 手工特征（父类 _vec，不含TF-IDF部分）
+#         hand_feats = np.array(
+#             [self._vec_no_tfidf(inst) for inst in instances], 
+#             dtype=np.float32
+#         )
+#         # BERT特征
+#         texts = [
+#             inst.preceding_text + " [SEP] " + inst.following_text 
+#             for inst in instances
+#         ]
+#         bert_feats = self._encode_texts(texts)   # (N, emb_dim)
 
-        # 第一次调用时fit PCA，之后只transform
-        if not hasattr(self, "pca"):
-            from sklearn.decomposition import PCA
-            self.pca = PCA(n_components=128)
-            bert_feats = self.pca.fit_transform(bert_feats)
-        else:
-            bert_feats = self.pca.transform(bert_feats)
+#         # 第一次调用时fit PCA，之后只transform
+#         if not hasattr(self, "pca"):
+#             from sklearn.decomposition import PCA
+#             self.pca = PCA(n_components=128)
+#             bert_feats = self.pca.fit_transform(bert_feats)
+#         else:
+#             bert_feats = self.pca.transform(bert_feats)
 
-        return np.concatenate([hand_feats, bert_feats], axis=1)
+#         return np.concatenate([hand_feats, bert_feats], axis=1)
 
-    def feature_names(self) -> list[str]:
-        base = [
-            "dense_score", "sparse_score", "rerank_score",
-            "dense_x_rerank", "sparse_x_rerank",
-            "dense_plus_sparse", "rerank_minus_dense",
-            "pos_relative", "pos_in_first_quarter", "pos_in_last_quarter",
-            "freq_raw", "freq_log", "freq_normalized",
-            "ctx_pos_kw", "ctx_neg_kw", "ctx_kw_ratio",
-            "ctx_pre_len", "ctx_post_len",
-            "is_bge",
-        ]
-        bert_names = [f"bert_{i}" for i in range(64)]
-        return base + bert_names
+#     def feature_names(self) -> list[str]:
+#         base = [
+#             "dense_score", "sparse_score", "rerank_score",
+#             "dense_x_rerank", "sparse_x_rerank",
+#             "dense_plus_sparse", "rerank_minus_dense",
+#             "pos_relative", "pos_in_first_quarter", "pos_in_last_quarter",
+#             "freq_raw", "freq_log", "freq_normalized",
+#             "ctx_pos_kw", "ctx_neg_kw", "ctx_kw_ratio",
+#             "ctx_pre_len", "ctx_post_len",
+#             "is_bge",
+#         ]
+#         bert_names = [f"bert_{i}" for i in range(64)]
+#         return base + bert_names
 
-    # ── 内部方法 ────────────────────────────────────────────────
+#     # ── 内部方法 ────────────────────────────────────────────────
 
-    def _vec_no_tfidf(self, inst: CitationInstance) -> list[float]:
-        # 父类 _vec() 去掉末尾的 self._tfidf() 调用
-        # 直接复制父类逻辑，只删最后一行
-        import math, random
-        rel_pos = inst.sentence_index / max(inst.total_sentences - 1, 1)
-        ctx = (inst.preceding_text + " " + inst.following_text).lower()
-        pos_kw = sum(1 for kw in self.POSITIVE_KW if kw in ctx)
-        neg_kw = sum(1 for kw in self.NEGATIVE_KW if kw in ctx)
-        d, s, r = inst.dense_score, inst.sparse_score, inst.rerank_score
-        return [
-            d, s, r,
-            d * r, s * r, d + s, r - d,
-            rel_pos,
-            float(rel_pos < 0.25),
-            float(rel_pos > 0.75),
-            float(inst.frequency_in_doc),
-            math.log1p(inst.frequency_in_doc),
-            inst.frequency_in_doc / 5.0,
-            float(pos_kw), float(neg_kw),
-            pos_kw / (pos_kw + neg_kw + 1),
-            float(len(inst.preceding_text.split())),
-            float(len(inst.following_text.split())),
-            inst.is_bge,
-        ]
+#     def _vec_no_tfidf(self, inst: CitationInstance) -> list[float]:
+#         # 父类 _vec() 去掉末尾的 self._tfidf() 调用
+#         # 直接复制父类逻辑，只删最后一行
+#         import math, random
+#         rel_pos = inst.sentence_index / max(inst.total_sentences - 1, 1)
+#         ctx = (inst.preceding_text + " " + inst.following_text).lower()
+#         pos_kw = sum(1 for kw in self.POSITIVE_KW if kw in ctx)
+#         neg_kw = sum(1 for kw in self.NEGATIVE_KW if kw in ctx)
+#         d, s, r = inst.dense_score, inst.sparse_score, inst.rerank_score
+#         return [
+#             d, s, r,
+#             d * r, s * r, d + s, r - d,
+#             rel_pos,
+#             float(rel_pos < 0.25),
+#             float(rel_pos > 0.75),
+#             float(inst.frequency_in_doc),
+#             math.log1p(inst.frequency_in_doc),
+#             inst.frequency_in_doc / 5.0,
+#             float(pos_kw), float(neg_kw),
+#             pos_kw / (pos_kw + neg_kw + 1),
+#             float(len(inst.preceding_text.split())),
+#             float(len(inst.following_text.split())),
+#             inst.is_bge,
+#         ]
 
-    @torch.no_grad()
-    def _encode_texts(self, texts: list[str]) -> np.ndarray:
-        all_embs = []
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i : i + self.batch_size]
-            enc = self.tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=256,     # 上下文窗口，可调
-                return_tensors="pt",
-            ).to(self.device)
-            out = self.bert(**enc)
-            # mean pooling（比[CLS]对短文本更稳定）
-            mask = enc["attention_mask"].unsqueeze(-1).float()
-            emb  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
-            emb  = F.normalize(emb, dim=-1)   # L2归一化
-            all_embs.append(emb.cpu().numpy())
-        return np.concatenate(all_embs, axis=0)
+#     @torch.no_grad()
+#     def _encode_texts(self, texts: list[str]) -> np.ndarray:
+#         all_embs = []
+#         for i in range(0, len(texts), self.batch_size):
+#             batch = texts[i : i + self.batch_size]
+#             enc = self.tokenizer(
+#                 batch,
+#                 padding=True,
+#                 truncation=True,
+#                 max_length=256,     # 上下文窗口，可调
+#                 return_tensors="pt",
+#             ).to(self.device)
+#             out = self.bert(**enc)
+#             # mean pooling（比[CLS]对短文本更稳定）
+#             mask = enc["attention_mask"].unsqueeze(-1).float()
+#             emb  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
+#             emb  = F.normalize(emb, dim=-1)   # L2归一化
+#             all_embs.append(emb.cpu().numpy())
+#         return np.concatenate(all_embs, axis=0)
 # ─────────────────────────────────────────────
 # 排序评估指标
 # ─────────────────────────────────────────────
