@@ -135,6 +135,12 @@ class CitationExtractor:
 # ─────────────────────────────────────────────
 # 特征工程
 # ─────────────────────────────────────────────
+import random
+
+def _safe_rerank(r):
+    if random.random() < 0.1:
+        return 0.0
+    return r
 
 class CitationFeatureBuilder:
     POSITIVE_KW = [
@@ -171,12 +177,14 @@ class CitationFeatureBuilder:
         ]
         return base + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
 
+
+
     def _vec(self, inst: CitationInstance) -> list[float]:
         rel_pos = inst.sentence_index / max(inst.total_sentences - 1, 1)
         ctx = (inst.preceding_text + " " + inst.following_text).lower()
         pos_kw = sum(1 for kw in self.POSITIVE_KW if kw in ctx)
         neg_kw = sum(1 for kw in self.NEGATIVE_KW if kw in ctx)
-        d, s, r = inst.dense_score, inst.sparse_score, inst.rerank_score
+        d, s, r = inst.dense_score, inst.sparse_score, _safe_rerank(inst.rerank_score)
         base = [
             d, s, r,
             d * r, s * r, d + s, r - d,
@@ -559,3 +567,58 @@ class DataLoader:
             results.append({"query_id": query_id, "cc_list": cc_results})
 
         return results
+
+    def sample_instances(
+        self,
+        instances: list[CitationInstance],
+        neg_pos_ratio: int = 10,
+        hard_neg_keep: int = 20,
+    ) -> list[CitationInstance]:
+        """
+        按 query_id 做 1:neg_pos_ratio 负采样
+
+        规则：
+        - 保留所有正样本
+        - 保留 top-K hard negatives（按 rerank_score）
+        - 其余负样本随机采样
+        """
+
+        from collections import defaultdict
+        import random
+
+        buckets = defaultdict(list)
+        for inst in instances:
+            buckets[inst.query_id].append(inst)
+
+        sampled = []
+
+        for qid, insts in buckets.items():
+            pos = [x for x in insts if x.is_gold == 1]
+            neg = [x for x in insts if x.is_gold == 0]
+
+            if not pos:
+                # 没有正样本的 query 直接跳过（训练无意义）
+                continue
+
+            # 🔥 1. 选 hard negatives（按 rerank_score 排）
+            neg_sorted = sorted(neg, key=lambda x: -x.rerank_score)
+            hard_negs = neg_sorted[:hard_neg_keep]
+
+            # 🔥 2. 剩余 negatives
+            remaining_negs = neg_sorted[hard_neg_keep:]
+
+            # 🔥 3. 计算需要多少负样本
+            target_neg = neg_pos_ratio * len(pos)
+            already = len(hard_negs)
+
+            if already >= target_neg:
+                sampled_negs = hard_negs[:target_neg]
+            else:
+                need = target_neg - already
+                random.shuffle(remaining_negs)
+                sampled_negs = hard_negs + remaining_negs[:need]
+
+            sampled.extend(pos)
+            sampled.extend(sampled_negs)
+
+        return sampled

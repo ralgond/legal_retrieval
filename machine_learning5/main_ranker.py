@@ -41,6 +41,7 @@ def main():
 
     loader = DataLoader(context_sentences=2)
     train_instances = loader.load_file(train_path)
+    train_instances = loader.sample_instances(train_instances, neg_pos_ratio=10)
     valid_instances = loader.load_file(valid_path)
 
     # ── 训练集统计 ────────────────────────────────────────────────────────
@@ -57,10 +58,10 @@ def main():
 
     # ── 训练（含早停）────────────────────────────────────────────────────
     ranker = CitationRanker(
-        n_estimators=300,
+        n_estimators=2000,
         learning_rate=0.05,
         num_leaves=31,
-        early_stopping_rounds=30,
+        early_stopping_rounds=50,
         eval_at=[1, 3, 5, 200],
     )
     ranker.fit(train_instances, valid_instances=valid_instances)
