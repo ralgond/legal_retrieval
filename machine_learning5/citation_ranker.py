@@ -196,6 +196,36 @@ class CitationFeatureBuilder:
         "vgl.", "anders als", "entgegen", "zweifelhaft", "offen gelassen",
         "nicht anwendbar", "abweichend", "kritisch",
     ]
+    # ── 语义子组关键词 ────────────────────────────────────────────
+    # 权威性：说明这个 citation 是主流判例／权威来源
+    AUTHORITY_KW = [
+        "grundlegend", "massgebend", "wegweisend",
+        "ständige rechtsprechung", "leitentscheid",
+        "konstante rechtsprechung", "gefestigte rechtsprechung",
+    ]
+
+    # 适用性：说明这个 citation 被直接援引适用
+    APPLICATION_KW = [
+        "gemäss", "analog", "entsprechend", "gilt",
+        "ist anzuwenden", "findet anwendung",
+        "ratio decidendi", "in anwendung",
+        "gestützt auf", "im sinne von",
+    ]
+
+    # 确认性：说明这个 citation 验证／支持了某个观点
+    CONFIRMATION_KW = [
+        "bestätigt", "ergibt sich", "in rechtlicher hinsicht",
+        "wie das bundesgericht", "bereits entschieden",
+        "wie dargelegt", "in diesem sinne",
+    ]
+
+    # 否定性：说明这个 citation 被质疑／区分／不适用
+    NEGATION_KW = [
+        "vgl.", "anders als", "entgegen", "zweifelhaft",
+        "offen gelassen", "nicht anwendbar", "abweichend",
+        "kritisch", "nicht einschlägig", "zu unterscheiden",
+        "kann nicht", "ist nicht", "widerspricht",
+    ]
 
     def __init__(self):
         self.vocab: dict[str, int] = {}
@@ -208,6 +238,48 @@ class CitationFeatureBuilder:
     def transform(self, instances: list[CitationInstance]) -> np.ndarray:
         return np.array([self._vec(inst) for inst in instances], dtype=np.float32)
 
+    def _semantic_group_features(self, inst: CitationInstance) -> list[float]:
+        pre  = inst.preceding_text.lower()
+        post = inst.following_text.lower()
+        ctx  = pre + " " + post
+
+        # 各子组在整体上下文的计数
+        authority_score    = sum(1 for kw in self.AUTHORITY_KW    if kw in ctx)
+        application_score  = sum(1 for kw in self.APPLICATION_KW  if kw in ctx)
+        confirmation_score = sum(1 for kw in self.CONFIRMATION_KW if kw in ctx)
+        negation_score     = sum(1 for kw in self.NEGATION_KW     if kw in ctx)
+
+        # 左右方向区分
+        authority_pre      = sum(1 for kw in self.AUTHORITY_KW    if kw in pre)
+        authority_post     = sum(1 for kw in self.AUTHORITY_KW    if kw in post)
+        application_pre    = sum(1 for kw in self.APPLICATION_KW  if kw in pre)
+        application_post   = sum(1 for kw in self.APPLICATION_KW  if kw in post)
+        negation_pre       = sum(1 for kw in self.NEGATION_KW     if kw in pre)
+        negation_post      = sum(1 for kw in self.NEGATION_KW     if kw in post)
+
+        # 正向子组总分（权威 + 适用 + 确认）
+        total_pos = authority_score + application_score + confirmation_score
+
+        return [
+            # 子组计数
+            float(authority_score),
+            float(application_score),
+            float(confirmation_score),
+            float(negation_score),
+            # 正负对比
+            float(total_pos),
+            float(total_pos - negation_score),      # 净正向分
+            float(total_pos / max(negation_score + 1, 1)),  # 正负比
+            # 方向特征
+            float(authority_pre),
+            float(authority_post),
+            float(application_pre),
+            float(application_post),
+            float(negation_pre),
+            float(negation_post),
+            float(application_pre - application_post),   # 前置适用 vs 后置适用
+        ]
+
     def feature_names(self) -> list[str]:
         base = [
             "dense_score", "sparse_score", "rerank_score",
@@ -218,7 +290,22 @@ class CitationFeatureBuilder:
             "ctx_pos_kw", "ctx_neg_kw", "ctx_kw_ratio",
             "ctx_pre_len", "ctx_post_len",
             "total_citations_in_cc", "citation_density",
-            "is_isolated" #, "in_parenthesis", "n_citations_in_ctx",  # 新增
+            "is_isolated", #, "in_parenthesis", "n_citations_in_ctx",  # 新增
+            # 语义子组
+            "authority_score",
+            "application_score",
+            "confirmation_score",
+            "negation_score",
+            "total_pos_score",
+            "net_pos_score",
+            "pos_neg_ratio",
+            "authority_pre",
+            "authority_post",
+            "application_pre",
+            "application_post",
+            "negation_pre",
+            "negation_post",
+            "application_direction",
         ]
         return base + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
 
@@ -249,7 +336,7 @@ class CitationFeatureBuilder:
             # float(inst.in_parenthesis),     # 新增
             # float(inst.n_citations_in_ctx), # 新增
         ]
-        return base + self._tfidf(inst.preceding_text + " " + inst.following_text)
+        return base + self._semantic_group_features(inst) + self._tfidf(inst.preceding_text + " " + inst.following_text)
 
     def _build_vocab(self, corpus, max_features):
         from collections import Counter
