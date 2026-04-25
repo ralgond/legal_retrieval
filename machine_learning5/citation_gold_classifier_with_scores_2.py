@@ -8,25 +8,15 @@ Citation Gold Classifier
   2. citation在文档中被引用的次数（文档级频率）
   3. citation在court consideration中的第几句
 
-数据格式（train/valid JSON）：
-[
-  {
-    "query_id": "train_0001",
-    "gold_citations": ["BGE 138 III 123", ...],
-    "cc_list": [
-      {
-        "dense_score": 0.1,
-        "sparse_score": 0.1,
-        "rerank_score": 0.2,
-        "text": "..."
-      }
-    ]
-  }
-]
+数据格式（train/valid JSONL，每行一个JSON对象）：
+{"query_id": "train_0001", "gold_citations": ["BGE 138 III 123", ...], "cc_list": [...]}
+
+test JSONL 格式相同，只是缺少 gold_citations 字段：
+{"query_id": "test_0001", "cc_list": [...]}
 
 架构选择：
   - 'lr'  : LogisticRegression（无早停，用valid做事后评估）
-  - 'lgbm': LightGBM（原生早停，监控valid F1）
+  - 'lgbm': LightGBM（原生早停，监控valid binary_logloss）
 """
 
 import json
@@ -56,7 +46,7 @@ class CitationInstance:
     total_sentences: int      # CC总句数
     frequency_in_doc: int     # 该citation在本CC中出现次数
 
-    # 🔥 新增：继承自 CC 的检索分数
+    # CC级别的检索分数（继承自所属CC）
     dense_score: float = 0.0
     sparse_score: float = 0.0
     rerank_score: float = 0.0
@@ -71,48 +61,62 @@ class CitationInstance:
 
 class DataLoader:
     """
-    将你的JSON格式数据加载为CitationInstance列表。
+    将 JSONL 格式数据加载为 CitationInstance 列表。
 
-    JSON格式：
-    [
-      {
-        "query_id": "train_0001",
-        "gold_citations": ["BGE 138 III 123", ...],
-        "cc_list": [
-          {"cc_id": "cc_001", "dense_score": 0.1, "sparse_score": 0.1, "rerank_score": 0.2, "text": "..."}
-        ]
-      }
-    ]
+    train/valid JSONL（每行一个对象，含 gold_citations）：
+      {"query_id": "train_0001", "gold_citations": ["BGE 138 III 123"], "cc_list": [
+        {"cc_id": "cc_001", "dense_score": 0.1, "sparse_score": 0.1, "rerank_score": 0.2, "text": "..."}
+      ]}
+
+    test JSONL（每行一个对象，无 gold_citations）：
+      {"query_id": "test_0001", "cc_list": [
+        {"cc_id": "cc_001", "dense_score": 0.1, "sparse_score": 0.1, "rerank_score": 0.2, "text": "..."}
+      ]}
     """
 
     def __init__(self, context_sentences: int = 2):
         self.extractor = CitationExtractor(context_sentences=context_sentences)
 
-    def load_file(self, path: str) -> list[CitationInstance]:
+    # ── 读取工具 ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_jsonl(path: str) -> list[dict]:
+        """逐行读取 JSONL 文件，跳过空行"""
+        records = []
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return self.load(data)
+            for lineno, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"JSONL 第 {lineno} 行解析失败: {e}")
+        return records
+
+    # ── train / valid 加载 ────────────────────────────────────────────────
+
+    def load_file(self, path: str) -> list[CitationInstance]:
+        """从 train/valid JSONL 文件加载（含 gold_citations）"""
+        return self.load(self._read_jsonl(path))
 
     def load(self, data: list[dict]) -> list[CitationInstance]:
         """
-        从已解析的list[dict]加载，cc_id直接读取自 cc["cc_id"]
+        从已解析的 list[dict] 加载（train/valid，含 gold_citations）。
+        cc_id 直接读取自 cc["cc_id"]。
         """
         all_instances: list[CitationInstance] = []
 
         for entry in data:
             query_id: str = entry["query_id"]
-            gold_citations: list[str] = entry["gold_citations"]
-            cc_list: list[dict] = entry["cc_list"]
+            gold_citations: list[str] = entry["gold_citations"]   # train/valid 必须有
 
-            for cc in cc_list:
-                cc_id = cc["cc_id"]
+            for cc in entry["cc_list"]:
                 instances = self.extractor.extract(
                     cc_text=cc["text"],
-                    cc_id=cc_id,
+                    cc_id=cc["cc_id"],
                     query_id=query_id,
                     gold_citations=gold_citations,
-
-                    # 🔥 新增
                     dense_score=cc.get("dense_score", 0.0),
                     sparse_score=cc.get("sparse_score", 0.0),
                     rerank_score=cc.get("rerank_score", 0.0),
@@ -123,29 +127,26 @@ class DataLoader:
 
     def load_with_retrieval_scores(self, data: list[dict]) -> tuple[list[CitationInstance], pd.DataFrame]:
         """
-        同时返回citation实例 和 CC级别的检索分数DataFrame（供LTR使用）。
+        同时返回 citation 实例 和 CC 级别的检索分数 DataFrame（供 LTR 使用）。
 
         返回：
-          instances  : list[CitationInstance]
-          cc_df      : DataFrame，列= [query_id, cc_id, dense_score, sparse_score, rerank_score]
+          instances : list[CitationInstance]
+          cc_df     : DataFrame，列 = [query_id, cc_id, dense_score, sparse_score, rerank_score, label]
         """
         all_instances: list[CitationInstance] = []
         cc_rows: list[dict] = []
 
         for entry in data:
-            query_id = entry["query_id"]
-            gold_citations = entry["gold_citations"]
+            query_id: str = entry["query_id"]
+            gold_citations: list[str] = entry["gold_citations"]
 
             for cc in entry["cc_list"]:
                 cc_id = cc["cc_id"]
-
                 instances = self.extractor.extract(
                     cc_text=cc["text"],
                     cc_id=cc_id,
                     query_id=query_id,
                     gold_citations=gold_citations,
-
-                    # 🔥 新增
                     dense_score=cc.get("dense_score", 0.0),
                     sparse_score=cc.get("sparse_score", 0.0),
                     rerank_score=cc.get("rerank_score", 0.0),
@@ -158,7 +159,6 @@ class DataLoader:
                     "dense_score":  cc.get("dense_score", 0.0),
                     "sparse_score": cc.get("sparse_score", 0.0),
                     "rerank_score": cc.get("rerank_score", 0.0),
-                    # CC级别label：是否包含任何gold citation
                     "label": int(any(
                         self.extractor._normalize(g) in {
                             self.extractor._normalize(m.group(0))
@@ -170,13 +170,117 @@ class DataLoader:
 
         return all_instances, pd.DataFrame(cc_rows)
 
+    # ── test 预测 ─────────────────────────────────────────────────────────
+
+    def predict_file(
+        self,
+        path: str,
+        classifier: "CitationGoldClassifier",
+        threshold: float = 0.5,
+        output_path: Optional[str] = None,
+    ) -> list[dict]:
+        """
+        从 test JSONL 文件加载并预测，可选写出结果 JSONL。
+
+        Args:
+            path        : test JSONL 文件路径
+            classifier  : 已训练的 CitationGoldClassifier
+            threshold   : gold 判定阈值，默认 0.5
+            output_path : 若指定，将预测结果写入该 JSONL 文件（每行一个 query）
+
+        Returns:
+            list[dict]，格式见 predict_dataset()
+        """
+        data = self._read_jsonl(path)
+        results = self.predict_dataset(data, classifier, threshold)
+
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                for record in results:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        return results
+
+    def predict_dataset(
+        self,
+        data: list[dict],
+        classifier: "CitationGoldClassifier",
+        threshold: float = 0.5,
+    ) -> list[dict]:
+        """
+        对 test 数据做预测（无 gold_citations 字段）。
+
+        输入格式（JSONL 每行 / list[dict] 每项）：
+          {"query_id": "test_0001", "cc_list": [
+            {"cc_id": "cc_001", "dense_score": 0.1, "sparse_score": 0.1,
+             "rerank_score": 0.2, "text": "..."}
+          ]}
+
+        输出格式（list[dict]，与输入 query_id / cc_id 对齐）：
+          [
+            {
+              "query_id": "test_0001",
+              "cc_list": [
+                {
+                  "cc_id": "cc_001",
+                  "citations": [
+                    {"citation_id": "BGE 138 III 123", "gold_prob": 0.87, "predicted_gold": true},
+                    {"citation_id": "BGER 4A_100/2020", "gold_prob": 0.21, "predicted_gold": false}
+                  ]
+                }
+              ]
+            }
+          ]
+        """
+        results = []
+
+        for entry in data:
+            query_id: str = entry["query_id"]
+            # test 集没有 gold_citations，传空列表（is_gold 全为 0，不影响特征）
+            cc_results = []
+
+            for cc in entry["cc_list"]:
+                cc_id: str = cc["cc_id"]
+
+                instances = self.extractor.extract(
+                    cc_text=cc["text"],
+                    cc_id=cc_id,
+                    query_id=query_id,
+                    gold_citations=[],
+                    dense_score=cc.get("dense_score", 0.0),
+                    sparse_score=cc.get("sparse_score", 0.0),
+                    rerank_score=cc.get("rerank_score", 0.0),
+                )
+
+                if not instances:
+                    cc_results.append({"cc_id": cc_id, "citations": []})
+                    continue
+
+                probs = classifier.predict_proba(instances)
+                preds = (probs >= threshold).astype(int)
+
+                cc_results.append({
+                    "cc_id": cc_id,
+                    "citations": [
+                        {
+                            "citation_id":    inst.citation_id,
+                            "gold_prob":      round(float(prob), 4),
+                            "predicted_gold": bool(pred),
+                        }
+                        for inst, prob, pred in zip(instances, probs, preds)
+                    ],
+                })
+
+            results.append({"query_id": query_id, "cc_list": cc_results})
+
+        return results
+
 
 # ─────────────────────────────────────────────
 # 从CC文本中抽取CitationInstance
 # ─────────────────────────────────────────────
 
 class CitationExtractor:
-    # 德语瑞士法律citation正则
     CITATION_RE = re.compile(
         r"""\b(?:
             SR\s*\d{3}(?:\.\d+)?(?:\s+Art\.?\s*\d+[a-z]?)?
@@ -195,11 +299,9 @@ class CitationExtractor:
         cc_id: str,
         query_id: str,
         gold_citations: list[str],
-
-        # 🔥 必须加
-        dense_score: float,
-        sparse_score: float,
-        rerank_score: float,
+        dense_score: float = 0.0,
+        sparse_score: float = 0.0,
+        rerank_score: float = 0.0,
     ) -> list[CitationInstance]:
         sentences = self._split_sentences(cc_text)
         total_sents = len(sentences)
@@ -231,12 +333,9 @@ class CitationExtractor:
                     sentence_index=sent_idx,
                     total_sentences=total_sents,
                     frequency_in_doc=freq_map.get(cit_id, 1),
-
-                    # 🔥 关键：继承 CC 分数
                     dense_score=dense_score,
                     sparse_score=sparse_score,
                     rerank_score=rerank_score,
-
                     is_gold=int(cit_id in gold_normalized),
                 ))
 
@@ -254,7 +353,8 @@ class CitationExtractor:
         return [s.replace("<DOT>", ".").strip() for s in sents if s.strip()]
 
     def _normalize(self, raw: str) -> str:
-        return re.sub(r"\s+", " ", raw.strip().upper())
+        # return re.sub(r"\s+", " ", raw.strip().upper())
+        return re.sub(r"\s+", " ", raw.strip())
 
 
 # ─────────────────────────────────────────────
@@ -287,14 +387,9 @@ class CitationFeatureBuilder:
 
     def feature_names(self) -> list[str]:
         return [
-            # 🔥 CC-level features
-            "dense_score",
-            "sparse_score",
-            "rerank_score",
-            "dense_x_rerank",
-            "sparse_x_rerank",
-            "dense_plus_sparse",
-            "rerank_minus_dense",
+            "dense_score", "sparse_score", "rerank_score",
+            "dense_x_rerank", "sparse_x_rerank",
+            "dense_plus_sparse", "rerank_minus_dense",
             "pos_relative", "pos_in_first_quarter", "pos_in_last_quarter",
             "freq_raw", "freq_log", "freq_normalized",
             "ctx_positive_kw_count", "ctx_negative_kw_count", "ctx_kw_ratio",
@@ -307,22 +402,12 @@ class CitationFeatureBuilder:
         pos_count = sum(1 for kw in self.POSITIVE_KEYWORDS if kw in ctx)
         neg_count = sum(1 for kw in self.NEGATIVE_KEYWORDS if kw in ctx)
 
+        dense, sparse, rerank = inst.dense_score, inst.sparse_score, inst.rerank_score
 
-        dense = inst.dense_score
-        sparse = inst.sparse_score
-        rerank = inst.rerank_score
-
-        score_features = [
-            dense,
-            sparse,
-            rerank,
-            dense * rerank,
-            sparse * rerank,
-            dense + sparse,
-            rerank - dense,
-        ]
-
-        base = score_features + [
+        base = [
+            dense, sparse, rerank,
+            dense * rerank, sparse * rerank,
+            dense + sparse, rerank - dense,
             rel_pos,
             float(rel_pos < 0.25),
             float(rel_pos > 0.75),
@@ -379,24 +464,20 @@ class CitationFeatureBuilder:
 
 class CitationGoldClassifier:
     """
-    二分类器：预测citation是否为gold
+    二分类器：预测 citation 是否为 gold
 
     早停策略：
-      - 'lr'  : 无原生早停；fit()接受valid_instances做事后评估，
-                不影响训练（LR无需早停，正则C已起到同等作用）
-      - 'lgbm': 原生早停，监控valid集的 binary_logloss，
-                patience由 early_stopping_rounds 控制
+      - 'lr'  : 无原生早停；fit() 接受 valid_instances 做事后评估
+      - 'lgbm': 原生早停，监控 valid 集的 binary_logloss
     """
 
     def __init__(
         self,
         model_type: str = "lgbm",
-        # LightGBM超参
-        n_estimators: int = 1000,      # 树的上限（早停会自动截断）
+        n_estimators: int = 1000,
         learning_rate: float = 0.05,
         num_leaves: int = 31,
-        early_stopping_rounds: int = 50,  # valid无改善多少轮后停止
-        # LogisticRegression超参
+        early_stopping_rounds: int = 50,
         C: float = 1.0,
     ):
         assert model_type in ("lr", "lgbm")
@@ -409,21 +490,15 @@ class CitationGoldClassifier:
 
         self.model = None
         self.feature_builder = CitationFeatureBuilder()
-        self.best_iteration_: Optional[int] = None   # lgbm早停后的最佳轮次
-        self.valid_metrics_: Optional[dict] = None   # 早停时的valid指标
+        self.best_iteration_: Optional[int] = None
+        self.valid_metrics_: Optional[dict] = None
 
     def fit(
         self,
         train_instances: list[CitationInstance],
         valid_instances: Optional[list[CitationInstance]] = None,
     ) -> "CitationGoldClassifier":
-        """
-        train_instances : 训练集citation列表
-        valid_instances : 验证集citation列表（lgbm用于早停，lr用于评估打印）
-        """
-        # 在训练集上fit特征词表
         self.feature_builder.fit(train_instances)
-
         X_train = self.feature_builder.transform(train_instances)
         y_train = np.array([inst.is_gold for inst in train_instances])
 
@@ -431,10 +506,7 @@ class CitationGoldClassifier:
             self._fit_lr(X_train, y_train, valid_instances)
         else:
             self._fit_lgbm(X_train, y_train, valid_instances)
-
         return self
-
-    # ── LR ────────────────────────────────────────────────────────────────
 
     def _fit_lr(self, X_train, y_train, valid_instances):
         from sklearn.linear_model import LogisticRegression
@@ -452,30 +524,21 @@ class CitationGoldClassifier:
         ])
         self.model.fit(X_train, y_train)
 
-        # LR没有早停，但打印valid集指标供参考
         if valid_instances:
             metrics = self.evaluate(valid_instances)
             self.valid_metrics_ = metrics
-            print(f"[LR] Valid → "
-                  f"F1={metrics['f1']:.4f}  "
-                  f"AUC={metrics['roc_auc']:.4f}  "
-                  f"AP={metrics['avg_precision']:.4f}")
-
-    # ── LightGBM ──────────────────────────────────────────────────────────
+            print(f"[LR] Valid → F1={metrics['f1']:.4f}  "
+                  f"AUC={metrics['roc_auc']:.4f}  AP={metrics['avg_precision']:.4f}")
 
     def _fit_lgbm(self, X_train, y_train, valid_instances):
         import lightgbm as lgb
-        from sklearn.metrics import f1_score
 
-        # 构造valid集
         eval_set = []
         if valid_instances:
             X_val = self.feature_builder.transform(valid_instances)
             y_val = np.array([inst.is_gold for inst in valid_instances])
             eval_set = [(X_val, y_val)]
 
-        # 自定义early stopping metric：valid F1（比logloss更直接）
-        # LightGBM callbacks方式（>=3.0 API）
         callbacks = [lgb.log_evaluation(period=20)]
         if valid_instances:
             callbacks.append(lgb.early_stopping(
@@ -491,51 +554,32 @@ class CitationGoldClassifier:
             verbose=-1,
         )
 
-        import pandas as _pd
         feat_names = self.feature_builder.feature_names()
-        X_train_df = _pd.DataFrame(X_train, columns=feat_names)
-
+        X_train_df = pd.DataFrame(X_train, columns=feat_names)
         fit_kwargs = dict(X=X_train_df, y=y_train, callbacks=callbacks)
         if eval_set:
-            X_val_df = _pd.DataFrame(eval_set[0][0], columns=feat_names)
+            X_val_df = pd.DataFrame(eval_set[0][0], columns=feat_names)
             fit_kwargs["eval_set"] = [(X_val_df, eval_set[0][1])]
             fit_kwargs["eval_metric"] = "binary_logloss"
 
         self.model.fit(**fit_kwargs)
-
         self.best_iteration_ = getattr(self.model, "best_iteration_", None)
 
         if valid_instances:
             self.valid_metrics_ = self.evaluate(valid_instances)
-            print(
-                f"\n[LGBM] 早停于第 {self.best_iteration_} 轮  |  "
-                f"Valid F1={self.valid_metrics_['f1']:.4f}  "
-                f"AUC={self.valid_metrics_['roc_auc']:.4f}  "
-                f"AP={self.valid_metrics_['avg_precision']:.4f}"
-            )
+            print(f"\n[LGBM] 早停于第 {self.best_iteration_} 轮  |  "
+                  f"Valid F1={self.valid_metrics_['f1']:.4f}  "
+                  f"AUC={self.valid_metrics_['roc_auc']:.4f}  "
+                  f"AP={self.valid_metrics_['avg_precision']:.4f}")
 
-    # ── 推理 ──────────────────────────────────────────────────────────────
     def predict_proba(self, instances: list[CitationInstance]) -> np.ndarray:
-        # 1. 转换成 numpy 数组
         X = self.feature_builder.transform(instances)
-        
-        # 2. 获取训练时使用的特征名称
         feat_names = self.feature_builder.feature_names()
-        
-        # 3. 将 X 包装成 DataFrame (解决 UserWarning)
-        import pandas as _pd
-        X_df = _pd.DataFrame(X, columns=feat_names)
-        
+        X_df = pd.DataFrame(X, columns=feat_names)
         return self.model.predict_proba(X_df)[:, 1]
-
-    # def predict_proba(self, instances: list[CitationInstance]) -> np.ndarray:
-    #     X = self.feature_builder.transform(instances)
-    #     return self.model.predict_proba(X)[:, 1]
 
     def predict(self, instances: list[CitationInstance], threshold: float = 0.5) -> np.ndarray:
         return (self.predict_proba(instances) >= threshold).astype(int)
-
-    # ── 评估 ──────────────────────────────────────────────────────────────
 
     def evaluate(self, instances: list[CitationInstance]) -> dict:
         from sklearn.metrics import (
@@ -582,8 +626,16 @@ class CitationScoredCC:
         cc_id: str,
         query_id: str,
         gold_citations: list[str],
+        dense_score: float = 0.0,
+        sparse_score: float = 0.0,
+        rerank_score: float = 0.0,
     ) -> dict:
-        instances = self.ext.extract(cc_text, cc_id, query_id, gold_citations)
+        instances = self.ext.extract(
+            cc_text, cc_id, query_id, gold_citations,
+            dense_score=dense_score,
+            sparse_score=sparse_score,
+            rerank_score=rerank_score,
+        )
         if not instances:
             return {
                 "citation_max_gold_prob": 0.0,
