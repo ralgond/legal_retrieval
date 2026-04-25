@@ -27,7 +27,7 @@ import pandas as pd
 from dataclasses import dataclass
 from typing import Optional
 from collections import defaultdict
-
+from sklearn.decomposition import PCA
 
 # ─────────────────────────────────────────────
 # 数据结构
@@ -49,6 +49,8 @@ class CitationInstance:
     dense_score: float = 0.0
     sparse_score: float = 0.0
     rerank_score: float = 0.0
+
+    is_bge: int = 0
 
     is_gold: int = 0
 
@@ -231,7 +233,131 @@ class CitationFeatureBuilder:
     def _tok(self, text):
         return re.findall(r"\b[a-züäöA-ZÜÄÖ]{3,}\b", text.lower())
 
+from transformers import AutoTokenizer, AutoModel
+import torch
+import torch.nn.functional as F
 
+class BertCitationFeatureBuilder(CitationFeatureBuilder):
+    """
+    用 BERT encoder 替换 TF-IDF。
+    其余手工特征（检索分数、位置、关键词等）保持不变。
+    继承父类只是为了复用 feature_names() 和 _vec() 的非TF-IDF部分。
+    """
+
+    def __init__(self, model_name: str = "deepset/gbert-base", 
+                 batch_size: int = 64, device: str = None):
+        super().__init__()
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = None
+        self.bert = None
+        self._emb_dim = None
+
+    def fit(self, instances: list[CitationInstance]):
+        # BERT 不需要fit，但要在这里初始化模型
+        # 沿用父类接口，保持调用方不变
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.bert = AutoModel.from_pretrained(self.model_name).to(self.device)
+        self.bert.eval()
+
+        # 先encode，再fit PCA
+        texts = [
+            inst.preceding_text + " [SEP] " + inst.following_text
+            for inst in instances
+        ]
+        bert_feats = self._encode_texts(texts)        # ← 这行不能省
+    
+        self.pca = PCA(n_components=64)
+        self.pca.fit(bert_feats)                      # ← fitOnly，不transform
+    
+        # 确认维度
+        self._emb_dim = 64
+        return self
+
+    def transform(self, instances: list[CitationInstance]) -> np.ndarray:
+        # 手工特征（父类 _vec，不含TF-IDF部分）
+        hand_feats = np.array(
+            [self._vec_no_tfidf(inst) for inst in instances], 
+            dtype=np.float32
+        )
+        # BERT特征
+        texts = [
+            inst.preceding_text + " [SEP] " + inst.following_text 
+            for inst in instances
+        ]
+        bert_feats = self._encode_texts(texts)   # (N, emb_dim)
+
+        # 第一次调用时fit PCA，之后只transform
+        if not hasattr(self, "pca"):
+            from sklearn.decomposition import PCA
+            self.pca = PCA(n_components=128)
+            bert_feats = self.pca.fit_transform(bert_feats)
+        else:
+            bert_feats = self.pca.transform(bert_feats)
+
+        return np.concatenate([hand_feats, bert_feats], axis=1)
+
+    def feature_names(self) -> list[str]:
+        base = [
+            "dense_score", "sparse_score", "rerank_score",
+            "dense_x_rerank", "sparse_x_rerank",
+            "dense_plus_sparse", "rerank_minus_dense",
+            "pos_relative", "pos_in_first_quarter", "pos_in_last_quarter",
+            "freq_raw", "freq_log", "freq_normalized",
+            "ctx_pos_kw", "ctx_neg_kw", "ctx_kw_ratio",
+            "ctx_pre_len", "ctx_post_len",
+            "is_bge",
+        ]
+        bert_names = [f"bert_{i}" for i in range(64)]
+        return base + bert_names
+
+    # ── 内部方法 ────────────────────────────────────────────────
+
+    def _vec_no_tfidf(self, inst: CitationInstance) -> list[float]:
+        # 父类 _vec() 去掉末尾的 self._tfidf() 调用
+        # 直接复制父类逻辑，只删最后一行
+        import math, random
+        rel_pos = inst.sentence_index / max(inst.total_sentences - 1, 1)
+        ctx = (inst.preceding_text + " " + inst.following_text).lower()
+        pos_kw = sum(1 for kw in self.POSITIVE_KW if kw in ctx)
+        neg_kw = sum(1 for kw in self.NEGATIVE_KW if kw in ctx)
+        d, s, r = inst.dense_score, inst.sparse_score, inst.rerank_score
+        return [
+            d, s, r,
+            d * r, s * r, d + s, r - d,
+            rel_pos,
+            float(rel_pos < 0.25),
+            float(rel_pos > 0.75),
+            float(inst.frequency_in_doc),
+            math.log1p(inst.frequency_in_doc),
+            inst.frequency_in_doc / 5.0,
+            float(pos_kw), float(neg_kw),
+            pos_kw / (pos_kw + neg_kw + 1),
+            float(len(inst.preceding_text.split())),
+            float(len(inst.following_text.split())),
+            inst.is_bge,
+        ]
+
+    @torch.no_grad()
+    def _encode_texts(self, texts: list[str]) -> np.ndarray:
+        all_embs = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+            enc = self.tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=256,     # 上下文窗口，可调
+                return_tensors="pt",
+            ).to(self.device)
+            out = self.bert(**enc)
+            # mean pooling（比[CLS]对短文本更稳定）
+            mask = enc["attention_mask"].unsqueeze(-1).float()
+            emb  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
+            emb  = F.normalize(emb, dim=-1)   # L2归一化
+            all_embs.append(emb.cpu().numpy())
+        return np.concatenate(all_embs, axis=0)
 # ─────────────────────────────────────────────
 # 排序评估指标
 # ─────────────────────────────────────────────
