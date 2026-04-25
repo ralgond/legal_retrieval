@@ -13,10 +13,15 @@ court_consideration_d = dict(zip(court_consideration_df['citation'].tolist(), co
 
 import common
 
-train_candidate_d = common.read_candidate("../data/ml3/raw_train_candidate.pkl", court_consideration_d)
-valid_candidate_d = common.read_candidate("../data/ml3/raw_valid_candidate.pkl", court_consideration_d)
-test_candidate_d = common.read_candidate("../data/ml3/raw_test_candidate.pkl", court_consideration_d)
+train_candidate_d = common.read_candidate("../data/ml5/raw_train_candidate.pkl", court_consideration_d)
+valid_candidate_d = common.read_candidate("../data/ml5/raw_valid_candidate.pkl", court_consideration_d)
+test_candidate_d = common.read_candidate("../data/ml5/raw_test_candidate.pkl", court_consideration_d)
 
-print(valid_candidate_d.keys())
+# print(valid_candidate_d.keys())
 
-print(valid_candidate_d['val_001']['rerank'])
+# print(valid_candidate_d['val_001']['rerank'])
+
+
+print(test_candidate_d.keys())
+
+print(test_candidate_d['test_001']['rerank'])
