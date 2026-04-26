@@ -316,7 +316,9 @@ class CitationFeatureBuilder:
         ctx = (inst.preceding_text + " " + inst.following_text).lower()
         pos_kw = sum(1 for kw in self.POSITIVE_KW if kw in ctx)
         neg_kw = sum(1 for kw in self.NEGATIVE_KW if kw in ctx)
-        d, s, r = _safe_dense(inst.dense_score), _safe_sparse(inst.sparse_score), _safe_rerank(inst.rerank_score)
+        # d, s, r = _safe_dense(inst.dense_score), _safe_sparse(inst.sparse_score), _safe_rerank(inst.rerank_score)
+
+        d, s, r = inst.dense_score, inst.sparse_score, inst.rerank_score
         base = [
             d, s, r,
             d * r, s * r, d + s, r - d,
