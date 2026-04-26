@@ -5,7 +5,7 @@ Demo：单层 LambdaRank（group = query_id）完整流程
 import json
 import os
 import tempfile
-from citation_ranker import DataLoader, CitationRanker #, BertCitationFeatureBuilder
+from citation_ranker import DataLoader, CitationRanker, EmbeddingCitationFeatureBuilder
 
 TRAIN_RECORDS = []
 with open('../data/ml5/s3_train.jsonl', encoding='utf-8') as inf:
@@ -64,7 +64,7 @@ def main():
         early_stopping_rounds=50,
         eval_at=[1, 3, 5, 200],
     )
-    ranker.feature_builder = BertCitationFeatureBuilder(
+    ranker.feature_builder = EmbeddingCitationFeatureBuilder(
         model_name="/root/.cache/modelscope/hub/models/ralgond/legal-swiss-roberta-base",
         batch_size=64,                    # A100可以开到256
         device="cuda",
