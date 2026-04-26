@@ -51,6 +51,8 @@ class CitationInstance:
     rerank_score: float = 0.0
 
     is_bge: int = 0
+    is_sr: int = 0
+    is_art: int = 0
 
     total_citations_in_cc: int = 0
     citation_density: float = 0.0
@@ -79,6 +81,21 @@ class CitationExtractor:
     def __init__(self, context_sentences: int = 2):
         self.context_sentences = context_sentences
 
+    def _parse_citation_type(self, cit_id: str) -> dict:
+        """
+        解析 citation 类型及 BGE 内部结构。
+        返回一个字典，供构造 CitationInstance 时解包。
+        """
+        is_bge = int(bool(re.match(r"BGE\s+\d", cit_id, re.IGNORECASE)))
+        is_sr  = int(bool(re.match(r"SR\s*\d", cit_id, re.IGNORECASE)))
+        is_art = int(bool(re.match(r"Art\.?\s*\d", cit_id, re.IGNORECASE)))
+
+        return dict(
+            is_bge=is_bge,
+            is_sr=is_sr,
+            is_art=is_art
+        )
+        
     def extract(
         self,
         cc_text: str,
@@ -127,6 +144,8 @@ class CitationExtractor:
                         break
                 # ────────────────────────────────────────────────
 
+                type_feats = self._parse_citation_type(cit_id)
+
                 instances.append(CitationInstance(
                     citation_id=cit_id,
                     cc_id=cc_id,
@@ -142,6 +161,9 @@ class CitationExtractor:
                     total_citations_in_cc=total_citations_in_cc,
                     citation_density=citation_density,
                     is_isolated=is_isolated,
+                    is_bge = type_feats['is_bge'],
+                    is_sr = type_feats['is_sr'],
+                    is_art = type_feats['is_art'],
                     # in_parenthesis=int(in_paren),
                     # n_citations_in_ctx=n_cit_in_ctx,
                     is_gold=int(cit_id in gold_normalized),
@@ -291,6 +313,9 @@ class CitationFeatureBuilder:
             "ctx_pre_len", "ctx_post_len",
             "total_citations_in_cc", "citation_density",
             "is_isolated", #, "in_parenthesis", "n_citations_in_ctx",  # 新增
+
+            "is_bge", "is_sr", "is_art",
+            
             # 语义子组
             "authority_score",
             "application_score",
@@ -337,6 +362,9 @@ class CitationFeatureBuilder:
             float(inst.is_isolated),        # 新增
             # float(inst.in_parenthesis),     # 新增
             # float(inst.n_citations_in_ctx), # 新增
+            float(inst.is_bge),
+            float(inst.is_sr),
+            float(inst.is_art),
         ]
         return base + self._semantic_group_features(inst) + self._tfidf(inst.preceding_text + " " + inst.following_text)
 
