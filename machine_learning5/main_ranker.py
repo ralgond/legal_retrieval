@@ -64,11 +64,11 @@ def main():
         early_stopping_rounds=50,
         eval_at=[1, 3, 5, 200],
     )
-    # ranker.feature_builder = BertCitationFeatureBuilder(
-    #     model_name="/root/.cache/modelscope/hub/models/ralgond/legal-swiss-roberta-base",
-    #     batch_size=64,                    # A100可以开到256
-    #     device="cuda",
-    # )
+    ranker.feature_builder = BertCitationFeatureBuilder(
+        model_name="/root/.cache/modelscope/hub/models/ralgond/legal-swiss-roberta-base",
+        batch_size=64,                    # A100可以开到256
+        device="cuda",
+    )
     ranker.fit(train_instances, valid_instances=valid_instances)
 
     # ── Valid 指标 ────────────────────────────────────────────────────────
