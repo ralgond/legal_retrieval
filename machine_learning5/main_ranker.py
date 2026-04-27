@@ -70,7 +70,7 @@ def main():
         eval_at=[1, 3, 5, 25, 200],
     )
     ranker.feature_builder = EmbeddingCitationFeatureBuilder(
-        model_name="/root/.cache/modelscope/hub/models/ralgond/legal-swiss-roberta-base",
+        model_name="/root/.cache/modelscope/hub/models/ralgond/legal-swiss-roberta-large",
         batch_size=64,                    # A100可以开到256
         device="cuda",
     )
