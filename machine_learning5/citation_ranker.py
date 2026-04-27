@@ -38,7 +38,7 @@ class CitationInstance:
     citation_id: str
     cc_id: str
     query_id: str
-
+    query_text: str
     preceding_text: str
     following_text: str
     sentence_index: int
@@ -60,10 +60,61 @@ class CitationInstance:
     is_isolated:          int = 0
     # in_parenthesis:       int = 0
     # n_citations_in_ctx:   int = 0
+    bm25_score: float = 0.0
+    keyword_hit_rate: float = 0.0
 
     is_gold: int = 0
 
 
+# pip install rank_bm25
+from rank_bm25 import BM25Okapi
+
+def compute_bm25_scores(instances: list[CitationInstance]) -> None:
+    """
+    按 query_id 分组，对该 query 下所有 citation 的 ctx 构建 BM25，
+    计算每个 citation 的 ctx 与 query 的相关性分数，回填到 inst.bm25_score。
+    原地修改，无返回值。
+    """
+    from collections import defaultdict
+
+    # 按 query 分组
+    query_buckets: dict[str, list[CitationInstance]] = defaultdict(list)
+    for inst in instances:
+        query_buckets[inst.query_id].append(inst)
+
+    for query_id, insts in query_buckets.items():
+        # tokenize
+        query_tokens = _bm25_tok(insts[0].query_text)
+        corpus = [_bm25_tok(inst.preceding_text + " " + inst.following_text)
+                  for inst in insts]
+
+        if not query_tokens or not any(corpus):
+            continue
+
+        bm25 = BM25Okapi(corpus)
+        scores = bm25.get_scores(query_tokens)
+
+        # 归一化到 [0, 1]
+        max_s = scores.max()
+        if max_s > 0:
+            scores = scores / max_s
+
+        for inst, score in zip(insts, scores):
+            inst.bm25_score = float(score)
+
+
+def _bm25_tok(text: str) -> list[str]:
+    return re.findall(r"\b[a-züäöA-ZÜÄÖ]{2,}\b", text.lower())
+
+def compute_keyword_hit_rate(instances: list[CitationInstance]) -> None:
+    for inst in instances:
+        query_tokens = set(_bm25_tok(inst.query_text))
+        ctx_tokens   = set(_bm25_tok(inst.preceding_text + " " + inst.following_text))
+        if not query_tokens:
+            inst.keyword_hit_rate = 0.0
+        else:
+            inst.keyword_hit_rate = len(query_tokens & ctx_tokens) / len(query_tokens)
+            
 # ─────────────────────────────────────────────
 # Citation 抽取
 # ─────────────────────────────────────────────
@@ -150,6 +201,7 @@ class CitationExtractor:
                     citation_id=cit_id,
                     cc_id=cc_id,
                     query_id=query_id,
+                    query_text="",
                     preceding_text=pre,
                     following_text=post,
                     sentence_index=sent_idx,
@@ -315,6 +367,8 @@ class CitationFeatureBuilder:
             "is_isolated", #, "in_parenthesis", "n_citations_in_ctx",  # 新增
 
             "is_bge", "is_sr", "is_art",
+            "bm25_score",
+            "keyword_hit_rate",
             
             # 语义子组
             "authority_score",
@@ -365,6 +419,8 @@ class CitationFeatureBuilder:
             float(inst.is_bge),
             float(inst.is_sr),
             float(inst.is_art),
+            inst.bm25_score,
+            inst.keyword_hit_rate,
         ]
         return base + self._semantic_group_features(inst) + self._tfidf(inst.preceding_text + " " + inst.following_text)
 
@@ -568,6 +624,9 @@ class CitationRanker:
         groups[i] = 第 i 个 query 下的 citation 数量（LightGBM group 格式）。
         组内顺序：同一 query 的所有 citations 连续排列。
         """
+        compute_bm25_scores(instances)  # ← 新增
+        compute_keyword_hit_rate(instances)
+        
         # 按 query_id 保持稳定顺序
         from collections import OrderedDict
         buckets: dict[str, list[CitationInstance]] = OrderedDict()
@@ -675,7 +734,20 @@ class CitationRanker:
 class DataLoader:
     def __init__(self, context_sentences: int = 2):
         self.extractor = CitationExtractor(context_sentences=context_sentences)
+        self._query_map: dict[str, str] = {}   # query_id → query text
 
+    def load_query_map(self, path: str, query_col: str = "query"):
+        """
+        预加载 query_id → query text 的映射。
+        valid 文件的列名是 query2，通过 query_col 参数指定。
+        """
+        df = pd.read_csv(path)
+        self._query_map.update(
+            dict(zip(df["query_id"].astype(str), df[query_col].astype(str)))
+        )
+        print(f"[DataLoader] 加载 {len(df)} 条 query from {path}")
+        return self
+        
     @staticmethod
     def _read_jsonl(path: str) -> list[dict]:
         records = []
@@ -701,7 +773,7 @@ class DataLoader:
             query_id = entry["query_id"]
             gold_citations = entry["gold_citations"]
             for cc in entry["cc_list"]:
-                all_instances.extend(self.extractor.extract(
+                insts = self.extractor.extract(
                     cc_text=cc["text"],
                     cc_id=cc["cc_id"],
                     query_id=query_id,
@@ -709,7 +781,14 @@ class DataLoader:
                     dense_score=cc.get("dense_score", 0.0),
                     sparse_score=cc.get("sparse_score", 0.0),
                     rerank_score=cc.get("rerank_score", 0.0),
-                ))
+                )
+
+                # 回填 query_text
+                query_text = self._query_map.get(str(query_id), "")
+                for inst in insts:
+                    inst.query_text = query_text
+                    
+                all_instances.extend(insts)
         return all_instances
 
     # ── test predict ──────────────────────────────────────────────────────
@@ -769,6 +848,11 @@ class DataLoader:
                     sparse_score=cc.get("sparse_score", 0.0),
                     rerank_score=cc.get("rerank_score", 0.0),
                 )
+                # 回填 query_text
+                query_text = self._query_map.get(str(query_id), "")
+                for inst in insts:
+                    inst.query_text = query_text
+                
                 all_instances.extend(insts)
                 meta.extend((query_id, cc["cc_id"]) for _ in insts)
 

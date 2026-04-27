@@ -40,6 +40,11 @@ def main():
     write_jsonl(TEST_RECORDS,  test_path)
 
     loader = DataLoader(context_sentences=2)
+
+    loader.load_query_map("../data/train_rewrite_001.csv", query_col="query2")
+    loader.load_query_map("../data/valid_rewrite_001.csv", query_col="query2")
+    loader.load_query_map("../data/test_rewrite_001.csv",  query_col="query")
+
     train_instances = loader.load_file(train_path)
     train_instances = loader.sample_instances(train_instances, neg_pos_ratio=10, hard_neg_keep=30)
     valid_instances = loader.load_file(valid_path)
@@ -62,7 +67,7 @@ def main():
         learning_rate=0.05,
         num_leaves=31,
         early_stopping_rounds=50,
-        eval_at=[1, 3, 5, 200],
+        eval_at=[1, 3, 5, 25, 200],
     )
     ranker.feature_builder = EmbeddingCitationFeatureBuilder(
         model_name="/root/.cache/modelscope/hub/models/ralgond/legal-swiss-roberta-base",
