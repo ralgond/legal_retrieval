@@ -121,11 +121,11 @@ def compute_keyword_hit_rate(instances: list[CitationInstance]) -> None:
 
 class CitationExtractor:
     CITATION_RE = re.compile(
-        r"""\b(?:
+        r"""(?:
             SR\s*\d{3}(?:\.\d+)?(?:\s+Art\.?\s*\d+[a-z]?)?
           | BGE\s+\d{1,3}\s+[IVX]+[a-z]?\s+\d+(?:\s+E\.\s*\d+[a-z]?)?
-          | Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)?[A-Z]{2,}
-        )\b""",
+          | Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)*(?:[A-Z][a-zA-ZäöüÄÖÜß0-9]*)
+        )""",
         re.VERBOSE,
     )
 
