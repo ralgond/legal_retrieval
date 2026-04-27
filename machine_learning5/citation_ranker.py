@@ -19,6 +19,7 @@ CC 的 dense/sparse/rerank 分数作为 citation 的特征传入，
 test JSONL 无 gold_citations 字段。
 """
 
+
 import json
 import re
 import math
