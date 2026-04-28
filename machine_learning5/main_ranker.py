@@ -46,7 +46,8 @@ def main():
     loader.load_query_map("../data/test_rewrite_001.csv",  query_col="query")
 
     train_instances = loader.load_file(train_path)
-    train_instances = loader.sample_instances(train_instances, neg_pos_ratio=10, hard_neg_keep=30)
+    # train_instances = loader.sample_instances(train_instances, neg_pos_ratio=10, hard_neg_keep=30)
+    train_instances = loader.sample_instances_multisources(train_instances, neg_pos_ratio=10, hard_neg_keep=30)
     valid_instances = loader.load_file(valid_path)
 
     # ── 训练集统计 ────────────────────────────────────────────────────────

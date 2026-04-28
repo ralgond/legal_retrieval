@@ -958,3 +958,72 @@ class DataLoader:
             sampled.extend(sampled_negs)
 
         return sampled
+
+    def sample_instances_multisources(
+        self,
+        instances: list[CitationInstance],
+        neg_pos_ratio: int = 10,
+        hard_neg_keep: int = 20,
+    ) -> list[CitationInstance]:
+        """
+        Hard negative 选取依据：多信号融合分数
+        
+        score = rerank_score                        # CC 语义相关（粗粒度）
+              + bm25_score                          # citation 上下文与 query 的词汇匹配（细粒度）
+              + keyword_hit_rate                    # query 关键词覆盖率
+              + pos_kw_signal                       # 上下文含权威性关键词（如 massgebend）
+              - 0.5 * citation_density              # 惩罚：citation 扎堆的 CC 里随便一个都高分
+        
+        多信号融合比单一 rerank_score 更能识别「citation 级别的难负例」。
+        """
+        from collections import defaultdict
+        import random
+    
+        POSITIVE_KW = [
+            "grundlegend", "massgebend", "wegweisend",
+            "ständige rechtsprechung", "bestätigt", "gemäss",
+            "analog", "entsprechend", "gilt", "ist anzuwenden",
+            "ergibt sich", "findet anwendung", "leitentscheid",
+        ]
+    
+        def fusion_score(inst: CitationInstance) -> float:
+            ctx = (inst.preceding_text + " " + inst.following_text).lower()
+            pos_kw = sum(1 for kw in POSITIVE_KW if kw in ctx)
+            return (
+                inst.rerank_score
+                + inst.bm25_score
+                + inst.keyword_hit_rate
+                + 0.3 * pos_kw
+                - 0.5 * inst.citation_density      # 高密度 CC 里的 citation 含金量低
+            )
+    
+        buckets: dict[str, list[CitationInstance]] = defaultdict(list)
+        for inst in instances:
+            buckets[inst.query_id].append(inst)
+    
+        sampled: list[CitationInstance] = []
+    
+        for qid, insts in buckets.items():
+            pos = [x for x in insts if x.is_gold == 1]
+            neg = [x for x in insts if x.is_gold == 0]
+    
+            if not pos:
+                continue
+    
+            neg_sorted    = sorted(neg, key=fusion_score, reverse=True)
+            hard_negs     = neg_sorted[:hard_neg_keep]
+            remaining     = neg_sorted[hard_neg_keep:]
+    
+            target_neg = neg_pos_ratio * len(pos)
+            already    = len(hard_negs)
+    
+            if already >= target_neg:
+                sampled_negs = hard_negs[:target_neg]
+            else:
+                random.shuffle(remaining)
+                sampled_negs = hard_negs + remaining[:target_neg - already]
+    
+            sampled.extend(pos)
+            sampled.extend(sampled_negs)
+    
+        return sampled
