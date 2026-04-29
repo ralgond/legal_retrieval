@@ -404,7 +404,7 @@ class CitationFeatureBuilder:
             "negation_post",
             "application_direction",
         ]
-        return base + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
+        return base # + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
 
 
 
@@ -446,7 +446,7 @@ class CitationFeatureBuilder:
             inst.tfidf_cosine,
             inst.tfidf_dot,
         ]
-        return base + self._semantic_group_features(inst) + self._tfidf(inst.preceding_text + " " + inst.following_text)
+        return base + self._semantic_group_features(inst) # + self._tfidf(inst.preceding_text + " " + inst.following_text)
 
     def _build_vocab(self, corpus, max_features):
         from collections import Counter
@@ -564,10 +564,10 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
             self._save_cache()
             self._cache_dirty = False
 
-        return np.concatenate([tfidf_feats, emb_feats], axis=1)
-
+        return super().transform(instances)
+        
     def feature_names(self):
-        return super().feature_names() + [f"emb_pca_{i}" for i in range(self.n_components)]
+        return super().feature_names() # + [f"emb_pca_{i}" for i in range(self.n_components)]
 
     # ── 内部 ────────────────────────────────────────────────────────────
 
