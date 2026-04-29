@@ -47,6 +47,8 @@ def main():
 
     train_instances = loader.load_file(train_path)
     # train_instances = loader.sample_instances(train_instances, neg_pos_ratio=10, hard_neg_keep=30)
+    import random
+    random.seed(42)
     train_instances = loader.sample_instances_multisources(train_instances, neg_pos_ratio=10, hard_neg_keep=30)
     valid_instances = loader.load_file(valid_path)
 

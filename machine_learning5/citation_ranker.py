@@ -29,6 +29,10 @@ from dataclasses import dataclass
 from typing import Optional
 from collections import defaultdict
 from sklearn.decomposition import PCA
+import os
+import os.path
+import sys
+import pickle
 
 # ─────────────────────────────────────────────
 # 数据结构
@@ -458,6 +462,7 @@ class CitationFeatureBuilder:
 from transformers import AutoTokenizer, AutoModel
 import torch
 import torch.nn.functional as F
+import hashlib
 
 class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
 
@@ -467,6 +472,7 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
         n_components: int = 128,
         batch_size: int = 64,
         device: str = None,
+        cache_path: str = "../data/ml5/emb_cache.pkl"
     ):
         super().__init__()
         self.model_name   = model_name
@@ -478,6 +484,29 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
         self._bert      = None
         self._pca: Optional[PCA] = None
 
+        self.cache_path = cache_path
+        self._emb_cache: dict[str, np.ndarray] = {}
+
+        # 尝试加载 cache
+        if os.path.exists(self.cache_path):
+            try:
+                with open(self.cache_path, "rb") as f:
+                    self._emb_cache = pickle.load(f)
+                print(f"[EmbeddingCache] loaded {len(self._emb_cache)} entries")
+            except Exception:
+                print("[EmbeddingCache] load failed, start fresh")
+
+    def _hash(self, text: str) -> str:
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def _save_cache(self):
+        try:
+            with open(self.cache_path, "wb") as f:
+                pickle.dump(self._emb_cache, f)
+            print(f"[EmbeddingCache] saved {len(self._emb_cache)} entries")
+        except Exception as e:
+            print(f"[EmbeddingCache] save failed: {e}")
+            
     def fit(self, instances):
         super().fit(instances)   # TF-IDF 词表
 
@@ -494,6 +523,10 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
         explained = self._pca.explained_variance_ratio_.sum()
         print(f"[EmbeddingFeatureBuilder] PCA {self.n_components}d "
               f"explained variance: {explained:.3f}")
+
+        # 🔥 保存 cache
+        self._save_cache()
+    
         return self
 
     def transform(self, instances):
@@ -501,6 +534,10 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
 
         raw_embs  = self._encode(self._to_texts(instances))
         emb_feats = self._pca.transform(raw_embs).astype(np.float32)
+
+        if getattr(self, "_cache_dirty", False):  # ← 只在有新 embedding 时写盘
+            self._save_cache()
+            self._cache_dirty = False
 
         return np.concatenate([tfidf_feats, emb_feats], axis=1)
 
@@ -518,27 +555,76 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
 
     @torch.no_grad()
     def _encode(self, texts: list[str]) -> np.ndarray:
-        all_embs = []
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i : i + self.batch_size]
-            enc = self._tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=256,
-                return_tensors="pt",
-            ).to(self.device)
+        results = [None] * len(texts)
 
-            out  = self._bert(**enc)
+        uncached_idx = []
+        uncached_texts = []
 
-            # mean pooling（比 [CLS] 对短文本更稳定）
-            mask = enc["attention_mask"].unsqueeze(-1).float()
-            emb  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
-            emb  = F.normalize(emb, dim=-1)   # L2 归一化
+        # ── 1. 查 cache ─────────────────────────
+        for i, text in enumerate(texts):
+            key = self._hash(text)
+            if key in self._emb_cache:
+                results[i] = self._emb_cache[key]
+            else:
+                uncached_idx.append(i)
+                uncached_texts.append(text)
 
-            all_embs.append(emb.cpu().numpy())
+        # ── 2. 只计算未缓存部分 ─────────────────
+        if uncached_texts:
+            new_embs = []
+    
+            for i in range(0, len(uncached_texts), self.batch_size):
+                batch = uncached_texts[i : i + self.batch_size]
+    
+                enc = self._tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=256,
+                    return_tensors="pt",
+                ).to(self.device)
+    
+                out  = self._bert(**enc)
+    
+                mask = enc["attention_mask"].unsqueeze(-1).float()
+                emb  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
+                emb  = F.normalize(emb, dim=-1)
+    
+                new_embs.append(emb.cpu().numpy())
+    
+            new_embs = np.concatenate(new_embs, axis=0)
 
-        return np.concatenate(all_embs, axis=0).astype(np.float32)
+            self._cache_dirty = True   # ← 标记有新内容
+    
+            # ── 3. 写回 cache ───────────────────
+            for idx, text, emb in zip(uncached_idx, uncached_texts, new_embs):
+                key = self._hash(text)
+                self._emb_cache[key] = emb
+                results[idx] = emb
+    
+        return np.stack(results).astype(np.float32)
+    
+        # all_embs = []
+        # for i in range(0, len(texts), self.batch_size):
+        #     batch = texts[i : i + self.batch_size]
+        #     enc = self._tokenizer(
+        #         batch,
+        #         padding=True,
+        #         truncation=True,
+        #         max_length=256,
+        #         return_tensors="pt",
+        #     ).to(self.device)
+
+        #     out  = self._bert(**enc)
+
+        #     # mean pooling（比 [CLS] 对短文本更稳定）
+        #     mask = enc["attention_mask"].unsqueeze(-1).float()
+        #     emb  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
+        #     emb  = F.normalize(emb, dim=-1)   # L2 归一化
+
+        #     all_embs.append(emb.cpu().numpy())
+
+        # return np.concatenate(all_embs, axis=0).astype(np.float32)
         
 # ─────────────────────────────────────────────
 # 排序评估指标
@@ -670,8 +756,9 @@ class CitationRanker:
             learning_rate=self.learning_rate,
             num_leaves=self.num_leaves,
             objective="lambdarank",
-            lambdarank_truncation_level=max(self.eval_at),
+            lambdarank_truncation_level=50, # max(self.eval_at),
             verbose=-1,
+            seed=42
         )
 
         feat_names = self.feature_builder.feature_names()
