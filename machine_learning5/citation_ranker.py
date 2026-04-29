@@ -68,6 +68,13 @@ class CitationInstance:
     bm25_score: float = 0.0
     keyword_hit_rate: float = 0.0
 
+    # ── query–doc 交互特征（由 FeatureBuilder 回填）──
+    emb_cosine:   float = 0.0   # query 与 ctx embedding 的余弦相似度
+    emb_dot:      float = 0.0   # 点积
+    emb_l2:       float = 0.0   # L2 距离
+    tfidf_cosine: float = 0.0   # query 与 ctx TF-IDF 向量的余弦
+    tfidf_dot:    float = 0.0   # TF-IDF 点积（≈ 词汇重叠加权）
+
     is_gold: int = 0
 
 
@@ -374,6 +381,12 @@ class CitationFeatureBuilder:
             "is_bge", "is_sr", "is_art",
             "bm25_score",
             "keyword_hit_rate",
+            # ── 新增：query–doc 交互 ──────────────────
+            "emb_cosine",
+            "emb_dot",
+            "emb_l2",
+            "tfidf_cosine",
+            "tfidf_dot",
             
             # 语义子组
             "authority_score",
@@ -426,6 +439,12 @@ class CitationFeatureBuilder:
             float(inst.is_art),
             inst.bm25_score,
             inst.keyword_hit_rate,
+            # ── 新增 ──────────────────────────────────
+            inst.emb_cosine,
+            inst.emb_dot,
+            inst.emb_l2,
+            inst.tfidf_cosine,
+            inst.tfidf_dot,
         ]
         return base + self._semantic_group_features(inst) + self._tfidf(inst.preceding_text + " " + inst.following_text)
 
@@ -524,6 +543,9 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
         print(f"[EmbeddingFeatureBuilder] PCA {self.n_components}d "
               f"explained variance: {explained:.3f}")
 
+        # 回填 fit 阶段的交互特征
+        self._fill_interaction_features(instances, raw_embs)
+        
         # 🔥 保存 cache
         self._save_cache()
     
@@ -534,6 +556,9 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
 
         raw_embs  = self._encode(self._to_texts(instances))
         emb_feats = self._pca.transform(raw_embs).astype(np.float32)
+
+        # 回填交互特征到 instance（_vec 会读取）
+        self._fill_interaction_features(instances, raw_embs)
 
         if getattr(self, "_cache_dirty", False):  # ← 只在有新 embedding 时写盘
             self._save_cache()
@@ -625,6 +650,57 @@ class EmbeddingCitationFeatureBuilder(CitationFeatureBuilder):
         #     all_embs.append(emb.cpu().numpy())
 
         # return np.concatenate(all_embs, axis=0).astype(np.float32)
+
+        # ── 新增：计算并回填 query–doc 交互特征 ─────────────────────────────
+
+    def _fill_interaction_features(
+            self,
+            instances: list[CitationInstance],
+            ctx_embs: np.ndarray,          # [N, raw_bert_dim]，已 L2 归一化
+        ) -> None:
+            """
+            对每个 instance：
+              - 编码 query embedding（有 cache，基本无额外开销）
+              - 计算 emb_cosine / emb_dot / emb_l2
+              - 计算 tfidf_cosine / tfidf_dot（用父类 _tfidf 方法）
+            结果原地写回 instance 字段。
+            """
+            # 1. 编码所有 query（去重，利用 cache）
+            query_texts = [inst.query_text for inst in instances]
+            query_embs  = self._encode(query_texts)   # [N, raw_bert_dim]，已归一化
+    
+            # 2. 构建 tfidf 向量（用父类已 fit 的词表）
+            ctx_tfidf_vecs   = np.array(
+                [self._tfidf(inst.preceding_text + " " + inst.following_text)
+                 for inst in instances],
+                dtype=np.float32,
+            )   # [N, vocab_size]
+    
+            query_tfidf_vecs = np.array(
+                [self._tfidf(inst.query_text) for inst in instances],
+                dtype=np.float32,
+            )   # [N, vocab_size]
+    
+            # 3. 逐样本计算交互并回填
+            for i, inst in enumerate(instances):
+                q_emb = query_embs[i]    # 已 L2 归一化
+                d_emb = ctx_embs[i]      # 已 L2 归一化
+    
+                inst.emb_cosine = float(np.dot(q_emb, d_emb))          # 归一化后点积 = 余弦
+                inst.emb_dot    = float(np.dot(q_emb, d_emb))          # 同上（显式保留语义）
+                inst.emb_l2     = float(np.linalg.norm(q_emb - d_emb))
+    
+                q_tfidf = query_tfidf_vecs[i]
+                d_tfidf = ctx_tfidf_vecs[i]
+    
+                q_norm  = np.linalg.norm(q_tfidf)
+                d_norm  = np.linalg.norm(d_tfidf)
+    
+                inst.tfidf_dot    = float(np.dot(q_tfidf, d_tfidf))
+                inst.tfidf_cosine = (
+                    float(inst.tfidf_dot / (q_norm * d_norm + 1e-8))
+                    if q_norm > 0 and d_norm > 0 else 0.0
+                )
         
 # ─────────────────────────────────────────────
 # 排序评估指标
