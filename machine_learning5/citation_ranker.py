@@ -37,6 +37,14 @@ import pickle
 # ─────────────────────────────────────────────
 # 数据结构
 # ─────────────────────────────────────────────
+CITATION_RE = re.compile(
+    r"""(?:
+        SR\s*\d{3}(?:\.\d+)?(?:\s+Art\.?\s*\d+[a-z]?)?
+      | BGE\s+\d{1,3}\s+[IVX]+[a-z]?\s+\d+(?:\s+E\.\s*\d+[a-z]?)?
+      | Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)*(?:[A-Z][a-zA-ZäöüÄÖÜß0-9]*)
+    )""",
+    re.VERBOSE,
+)
 
 @dataclass
 class CitationInstance:
@@ -44,6 +52,7 @@ class CitationInstance:
     cc_id: str
     query_id: str
     query_text: str
+    raw_query_text: str
     preceding_text: str
     following_text: str
     sentence_index: int
@@ -74,6 +83,34 @@ class CitationInstance:
     emb_l2:       float = 0.0   # L2 距离
     tfidf_cosine: float = 0.0   # query 与 ctx TF-IDF 向量的余弦
     tfidf_dot:    float = 0.0   # TF-IDF 点积（≈ 词汇重叠加权）
+
+    # query 结构特征（按 query 级别，同一 query 的所有 inst 值相同）
+    q_has_bge:        int   = 0
+    q_has_sr:         int   = 0
+    q_has_art:        int   = 0
+    q_n_citations:    int   = 0
+    q_n_tokens:       int   = 0
+    q_is_short:       int   = 0
+    q_is_long:        int   = 0
+    q_is_question:    int   = 0
+    q_n_commas:       int   = 0
+    q_has_quotes:     int   = 0
+    
+    q_is_procedural:  int   = 0
+    q_is_substantive: int   = 0
+    q_is_interpretive: int  = 0
+    q_domain_criminal:int   = 0
+    q_domain_civil:   int   = 0
+    q_domain_admin:   int   = 0
+    q_lang_de:        int   = 0
+    q_lang_fr:        int   = 0
+    
+    # query–citation 交互特征（每个 inst 不同）
+    q_mentions_this_cit:   int   = 0
+    q_citation_type_match: int   = 0
+    q_keyword_hit_pre:     float = 0.0
+    q_keyword_hit_post:    float = 0.0
+    q_hit_asymmetry:       float = 0.0
 
     is_gold: int = 0
 
@@ -126,21 +163,123 @@ def compute_keyword_hit_rate(instances: list[CitationInstance]) -> None:
             inst.keyword_hit_rate = 0.0
         else:
             inst.keyword_hit_rate = len(query_tokens & ctx_tokens) / len(query_tokens)
-            
+
+def query_structural_features(query_text: str, raw_query_text) -> dict:
+    q = query_text
+    raw_q = raw_query_text
+
+    return {
+        # ── citation 类型 ──────────────────────────
+        "q_has_bge":      int(bool(re.search(r"BGE\s+\d", raw_q))),
+        "q_has_sr":       int(bool(re.search(r"SR\s*\d", raw_q))),
+        "q_has_art":      int(bool(re.search(r"Art\.?\s*\d", raw_q))),
+        "q_n_citations":  len(CITATION_RE.findall(raw_q)),
+
+        # ── 长度 ───────────────────────────────────
+        "q_n_tokens":     len(q.split()),
+        "q_n_chars":      len(q),
+        "q_is_short":     int(len(q.split()) < 10),   # 关键词式
+        "q_is_long":      int(len(q.split()) > 40),   # 长句式
+
+        # ── 标点/结构 ──────────────────────────────
+        "q_is_question":  int("?" in q),
+        "q_n_commas":     q.count(","),
+        "q_has_quotes":   int('"' in q or "«" in q),
+    }
+
+# 查询意图分类
+PROCEDURAL_KW  = ["verfahren", "zuständigkeit", "frist", "rechtsmittel",
+                   "beschwerde", "klage", "antrag"]
+SUBSTANTIVE_KW = ["haftung", "schadenersatz", "vertrag", "eigentum",
+                   "strafe", "verjährung", "anspruch"]
+INTERPRETIVE_KW= ["auslegung", "analog", "sinn", "zweck", "ratio",
+                   "bedeutung", "begrif"]
+
+def query_intent_features(query_text: str) -> dict:
+    q = query_text.lower()
+    return {
+        # 查询意图
+        "q_is_procedural":   int(any(kw in q for kw in PROCEDURAL_KW)),
+        "q_is_substantive":  int(any(kw in q for kw in SUBSTANTIVE_KW)),
+        "q_is_interpretive": int(any(kw in q for kw in INTERPRETIVE_KW)),
+
+        # 法律领域
+        "q_domain_criminal": int(any(kw in q for kw in
+            ["straf", "delikt", "täter", "opfer", "schuld"])),
+        "q_domain_civil":    int(any(kw in q for kw in
+            ["vertrag", "schuld", "eigentum", "miete", "kauf"])),
+        "q_domain_admin":    int(any(kw in q for kw in
+            ["verwaltung", "behörde", "bewilligung", "verfügung"])),
+    }
+
+def query_citation_interaction(
+    inst: CitationInstance,
+) -> dict:
+    q   = inst.query_text.lower()
+    raw_q = inst.raw_query_text.lower()
+    cit = inst.citation_id.lower()
+    ctx = (inst.preceding_text + " " + inst.following_text).lower()
+
+    # query 里是否直接提到了这个 citation
+    q_mentions_this_cit = int(
+        inst.citation_id[:6].lower() in raw_q
+    )
+
+    # query 里的 citation 类型和 inst 的类型是否匹配
+    q_wants_bge = int(bool(re.search(r"bge\s+\d", raw_q)))
+    q_wants_sr  = int(bool(re.search(r"sr\s*\d",  raw_q)))
+    type_match  = int(
+        (q_wants_bge and inst.is_bge) or
+        (q_wants_sr  and inst.is_sr)
+    )
+
+    # query 关键词在 citation 上下文的命中（已有 keyword_hit_rate，补充方向性）
+    q_tokens   = set(_bm25_tok(inst.query_text))
+    pre_tokens = set(_bm25_tok(inst.preceding_text))
+    post_tokens= set(_bm25_tok(inst.following_text))
+
+    pre_hit  = len(q_tokens & pre_tokens)  / (len(q_tokens) + 1e-8)
+    post_hit = len(q_tokens & post_tokens) / (len(q_tokens) + 1e-8)
+
+    return {
+        "q_mentions_this_cit":  q_mentions_this_cit,
+        "q_citation_type_match": type_match,
+        "q_keyword_hit_pre":    pre_hit,
+        "q_keyword_hit_post":   post_hit,
+        "q_hit_asymmetry":      pre_hit - post_hit,  # 前置命中 vs 后置命中
+    }
+
+def compute_query_features(instances: list[CitationInstance]) -> None:
+    """原地回填所有 query 相关特征"""
+    from collections import defaultdict
+    buckets = defaultdict(list)
+    for inst in instances:
+        buckets[inst.query_id].append(inst)
+
+    for qid, insts in buckets.items():
+        q = insts[0].query_text
+        raw_q = insts[0].raw_query_text
+
+        # query 级别特征（同 query 共享）
+        struct  = query_structural_features(q, raw_q)
+        intent  = query_intent_features(q)
+
+        for inst in insts:
+            # 回填 query 级别特征
+            for k, v in {**struct, **intent}.items():
+                if hasattr(inst, k):
+                    setattr(inst, k, v)
+
+            # 回填 query–citation 交互特征
+            inter = query_citation_interaction(inst)
+            for k, v in inter.items():
+                if hasattr(inst, k):
+                    setattr(inst, k, v)
 # ─────────────────────────────────────────────
 # Citation 抽取
 # ─────────────────────────────────────────────
 
 class CitationExtractor:
-    CITATION_RE = re.compile(
-        r"""(?:
-            SR\s*\d{3}(?:\.\d+)?(?:\s+Art\.?\s*\d+[a-z]?)?
-          | BGE\s+\d{1,3}\s+[IVX]+[a-z]?\s+\d+(?:\s+E\.\s*\d+[a-z]?)?
-          | Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)*(?:[A-Z][a-zA-ZäöüÄÖÜß0-9]*)
-        )""",
-        re.VERBOSE,
-    )
-
     def __init__(self, context_sentences: int = 2):
         self.context_sentences = context_sentences
 
@@ -173,7 +312,7 @@ class CitationExtractor:
         total_sents = len(sentences)
 
         freq_map: dict[str, int] = {}
-        for c in self.CITATION_RE.findall(cc_text):
+        for c in CITATION_RE.findall(cc_text):
             key = self._normalize(c)
             freq_map[key] = freq_map.get(key, 0) + 1
 
@@ -186,7 +325,7 @@ class CitationExtractor:
 
 
         for sent_idx, sent in enumerate(sentences):
-            for m in self.CITATION_RE.finditer(sent):
+            for m in CITATION_RE.finditer(sent):
                 cit_id = self._normalize(m.group(0))
                 if cit_id in seen:
                     continue
@@ -196,7 +335,7 @@ class CitationExtractor:
                 ctx = pre + " " + sent + " " + post
 
                 # ── citation role features ──────────────────────
-                n_cit_in_ctx = len(self.CITATION_RE.findall(ctx))
+                n_cit_in_ctx = len(CITATION_RE.findall(ctx))
                 is_isolated  = int(n_cit_in_ctx == 1)
 
                 # 检查 citation 是否出现在括号内
@@ -214,6 +353,7 @@ class CitationExtractor:
                     cc_id=cc_id,
                     query_id=query_id,
                     query_text="",
+                    raw_query_text="",
                     preceding_text=pre,
                     following_text=post,
                     sentence_index=sent_idx,
@@ -404,7 +544,24 @@ class CitationFeatureBuilder:
             "negation_post",
             "application_direction",
         ]
-        return base # + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
+
+        query_feature_names = [
+            # ── query 结构特征 ──────────────────────────
+            "q_has_bge", "q_has_sr", "q_has_art",
+            "q_n_citations",
+            "q_n_tokens", "q_is_short", "q_is_long",
+            "q_is_question", "q_n_commas", "q_has_quotes",
+            # ── query 意图特征 ──────────────────────────
+            "q_is_procedural", "q_is_substantive", "q_is_interpretive",
+            "q_domain_criminal", "q_domain_civil", "q_domain_admin",
+            # ── query–citation 交互特征 ─────────────────
+            "q_mentions_this_cit",
+            "q_citation_type_match",
+            "q_keyword_hit_pre",
+            "q_keyword_hit_post",
+            "q_hit_asymmetry",
+        ]
+        return base + query_feature_names # + [f"tfidf_{w}" for w in sorted(self.vocab, key=self.vocab.get)]
 
 
 
@@ -446,7 +603,37 @@ class CitationFeatureBuilder:
             inst.tfidf_cosine,
             inst.tfidf_dot,
         ]
-        return base + self._semantic_group_features(inst) # + self._tfidf(inst.preceding_text + " " + inst.following_text)
+
+        query_feature = [
+            # ── query 结构特征 ──────────────────────────
+            float(inst.q_has_bge),
+            float(inst.q_has_sr),
+            float(inst.q_has_art),
+            float(inst.q_n_citations),
+            float(inst.q_n_tokens),
+            float(inst.q_is_short),
+            float(inst.q_is_long),
+            float(inst.q_is_question),
+            float(inst.q_n_commas),
+            float(inst.q_has_quotes),
+            # ── query 意图特征 ──────────────────────────
+            float(inst.q_is_procedural),
+            float(inst.q_is_substantive),
+            float(inst.q_is_interpretive),
+            float(inst.q_domain_criminal),
+            float(inst.q_domain_civil),
+            float(inst.q_domain_admin),
+            # ── query–citation 交互特征 ─────────────────
+            float(inst.q_mentions_this_cit),
+            float(inst.q_citation_type_match),
+            inst.q_keyword_hit_pre,
+            inst.q_keyword_hit_post,
+            inst.q_hit_asymmetry,
+        ]
+        result = base + self._semantic_group_features(inst) + query_feature
+        assert len(result) == len(self.feature_names()), \
+            f"特征数量不匹配: _vec={len(result)}, feature_names={len(self.feature_names())}"
+        return result
 
     def _build_vocab(self, corpus, max_features):
         from collections import Counter
@@ -789,6 +976,7 @@ class CitationRanker:
         """
         compute_bm25_scores(instances)  # ← 新增
         compute_keyword_hit_rate(instances)
+        compute_query_features(instances)
         
         # 按 query_id 保持稳定顺序
         from collections import OrderedDict
@@ -834,7 +1022,7 @@ class CitationRanker:
             objective="lambdarank",
             lambdarank_truncation_level=50, # max(self.eval_at),
             verbose=-1,
-            seed=42
+            seed=43
         )
 
         feat_names = self.feature_builder.feature_names()
@@ -899,8 +1087,13 @@ class DataLoader:
     def __init__(self, context_sentences: int = 2):
         self.extractor = CitationExtractor(context_sentences=context_sentences)
         self._query_map: dict[str, str] = {}   # query_id → query text
+        self._raw_query_map: dict[str, str] = {}   # query_id → 德语原文
 
-    def load_query_map(self, path: str, query_col: str = "query"):
+    def load_query_map(self, 
+                       path: str, 
+                       query_col: str = "query", 
+                       raw_query_col: str = None, # 英语列名，None 表示没有
+                      ):
         """
         预加载 query_id → query text 的映射。
         valid 文件的列名是 query2，通过 query_col 参数指定。
@@ -909,6 +1102,10 @@ class DataLoader:
         self._query_map.update(
             dict(zip(df["query_id"].astype(str), df[query_col].astype(str)))
         )
+        if raw_query_col and raw_query_col in df.columns:
+            self._raw_query_map.update(
+                dict(zip(df["query_id"].astype(str), df[raw_query_col].astype(str)))
+            )
         print(f"[DataLoader] 加载 {len(df)} 条 query from {path}")
         return self
         
@@ -949,8 +1146,10 @@ class DataLoader:
 
                 # 回填 query_text
                 query_text = self._query_map.get(str(query_id), "")
+                raw_query_text = self._raw_query_map.get(str(query_id), query_text)
                 for inst in insts:
                     inst.query_text = query_text
+                    inst.raw_query_text = raw_query_text
                     
                 all_instances.extend(insts)
         return all_instances

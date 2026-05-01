@@ -39,11 +39,11 @@ def main():
     write_jsonl(VALID_RECORDS, valid_path)
     write_jsonl(TEST_RECORDS,  test_path)
 
-    loader = DataLoader(context_sentences=2)
+    loader = DataLoader()
 
-    loader.load_query_map("../data/train_rewrite_001.csv", query_col="query2")
-    loader.load_query_map("../data/valid_rewrite_001.csv", query_col="query2")
-    loader.load_query_map("../data/test_rewrite_001.csv",  query_col="query")
+    loader.load_query_map("../data/train_rewrite_001.csv", query_col="query2", raw_query_col="query")
+    loader.load_query_map("../data/valid_rewrite_001.csv", query_col="query2", raw_query_col="query")
+    loader.load_query_map("../data/test_rewrite_001.csv",  query_col="query", raw_query_col="query_en")
 
     train_instances = loader.load_file(train_path)
     # train_instances = loader.sample_instances(train_instances, neg_pos_ratio=10, hard_neg_keep=30)

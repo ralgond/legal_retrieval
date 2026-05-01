@@ -26,7 +26,8 @@ def extract_citations_from_text(text: str) -> list[str]:
     
     # Art. pattern: Art. X LAW (e.g., Art. 1 ZGB, Art. 41 OR)
     art_matches = re.findall(
-        r"Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)?[A-Z]{2,}",
+        # r"Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)?[A-Z]{2,}",
+        r"Art\.?\s+\d+[a-z]?\s+(?:Abs\.?\s*\d+\s+)*(?:[A-Z][a-zA-ZäöüÄÖÜß0-9]*)",
         text,
         re.IGNORECASE
     )
