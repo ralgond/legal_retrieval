@@ -1,0 +1,12 @@
+python train_lora.py \
+    --model_name_or_path /root/.cache/modelscope/hub/models/Qwen/Qwen2___5-0___5B-Instruct \
+    --train_file ../data/ml6/train.jsonl \
+    --dev_file   ../data/ml6/dev.jsonl \
+    --output_dir ../data/ml6/checkpoints \
+    --lora_r 16 \
+    --lora_alpha 32 \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 4 \
+    --gradient_accumulation_steps 4 \
+    --learning_rate 2e-4  \
+    --dev_raw_file ../data/ml6/dev_raw.jsonl
