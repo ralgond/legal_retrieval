@@ -12,6 +12,7 @@ build_dataset.py
   "cc_list": [
     {
       "cc_id": "BGE_123_I_456",
+      "rerank_score": 0.92,
       "cc_sentences": [{"sent_id": 0, "text": "..."}, ...]
     },
     ...
@@ -21,9 +22,11 @@ build_dataset.py
 gold_citations 为纯字符串列表，sent_id 由代码在每个 CC 的 sentences 中自动搜索。
 若某个 gold citation 在当前 CC 中找不到，则跳过该 citation（它属于其他 CC）。
 
-Evidence定义：citation所在句 ± window句（默认window=2）拼接而成。
-Hard negative定义：gold citation的evidence窗口内出现的、不在gold集合中的citations。
-Random negative定义：从同一CC中随机采样的非gold citations。
+Hard negative分两类：
+  Intra-CC hard：gold citation的evidence窗口内的非gold citations（CC内部）
+  Inter-CC hard：rerank_score高但无gold citation的CC中提取的citations（跨CC）
+               rerank_score越高表示越容易被误判为相关，是最难的跨CC负样本
+Random negative：从当前CC全文随机采样的非gold citations
 训练格式：Pairwise，每条样本 = (query, evidence_pos, citation_pos, evidence_neg, citation_neg)
 """
 
@@ -32,18 +35,19 @@ import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
-
 import os
 import sys
 src_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), '..', 'src'))
 if src_path not in sys.path:
     sys.path.append(src_path)
-    
+from citation_utils import split_sentences, extract_citations_from_text
 from citation_utils import extract_citations_from_text
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 WINDOW = 2                  # evidence窗口大小（前后各N句）
-HARD_NEG_PER_GOLD = 2       # 每个gold citation最多配几个hard negative
+HARD_NEG_PER_GOLD = 2       # 每个gold citation最多配几个 intra-CC hard negative
+INTER_CC_HARD_PER_GOLD = 2  # 每个gold citation最多配几个 inter-CC hard negative
+INTER_CC_HARD_TOPK = 3      # 取rerank_score最高的前K个无gold的CC作为inter-CC hard来源
 RAND_NEG_PER_GOLD = 1       # 每个gold citation额外配几个random negative
 TRAIN_RATIO = 0.8
 DEV_RATIO   = 0.1
@@ -187,9 +191,11 @@ def build_pairs(
     sentences: list[str],
     gold_citations: list[dict],
     rng: random.Random,
+    extra_negs: list[dict] | None = None,
 ) -> list[dict]:
     """
     为一条原始记录构建所有pairwise训练样本。
+    extra_negs：外部传入的额外负样本（inter-CC hard negatives）。
     每条样本：
     {
         query_id, cc_id, query,
@@ -203,28 +209,28 @@ def build_pairs(
         ev = build_evidence(sentences, g["sent_id"])
         gold_items.append({"citation_id": g["citation_id"], "evidence": ev})
 
-    # 挖掘negatives
-    hard_negs  = mine_hard_negatives(sentences, gold_citations)
+    # 挖掘 intra-CC hard negatives
+    hard_negs    = mine_hard_negatives(sentences, gold_citations)
     hard_neg_ids = {h["citation_id"] for h in hard_negs}
-    rand_negs  = sample_random_negatives(sentences, gold_citations, hard_neg_ids, rng=rng)
+    rand_negs    = sample_random_negatives(sentences, gold_citations, hard_neg_ids, rng=rng)
 
-    all_negs = hard_negs + rand_negs
+    # 合并：intra hard > inter hard > random
+    all_negs = hard_negs + (extra_negs or []) + rand_negs
     if not all_negs:
         return []
 
     pairs = []
     for pos in gold_items:
-        # 优先配hard neg，再配random neg
         for neg in all_negs:
             pairs.append({
-                "query_id":       query_id,
-                "cc_id":          cc_id,
-                "query":          query,
+                "query_id":        query_id,
+                "cc_id":           cc_id,
+                "query":           query,
                 "pos_citation_id": pos["citation_id"],
-                "pos_evidence":   pos["evidence"],
+                "pos_evidence":    pos["evidence"],
                 "neg_citation_id": neg["citation_id"],
-                "neg_evidence":   neg["evidence"],
-                "neg_source":     neg["source"],
+                "neg_evidence":    neg["evidence"],
+                "neg_source":      neg["source"],
             })
 
     return pairs
@@ -268,21 +274,67 @@ def build(input_path: str, output_dir: Path = OUTPUT_DIR, seed: int = SEED):
     all_pairs = []
     skipped   = 0
     for rec in raw_records:
-        gold_citation_ids = rec["gold_citations"]   # list[str]
+        gold_citation_ids = set(rec["gold_citations"])
+
+        # ── 确定哪些CC含有gold citation ──────────────────────────────────────
+        cc_has_gold = set()
         for cc in rec["cc_list"]:
             sentences = [s["text"] for s in cc["cc_sentences"]]
-            # 在当前 CC 中定位 gold citations（找不到的自动跳过）
-            gold_citations = resolve_gold_citations(sentences, gold_citation_ids)
-            if not gold_citations:
-                skipped += 1
+            if resolve_gold_citations(sentences, gold_citation_ids):
+                cc_has_gold.add(cc["cc_id"])
+
+        # ── 构建 inter-CC hard negative 池 ───────────────────────────────────
+        # 条件：无gold citation + rerank_score最高的前INTER_CC_HARD_TOPK个CC
+        # 这类CC与query语义最相近却没有gold，是最容易让模型误判的负样本
+        inter_cc_candidates = [
+            cc for cc in rec["cc_list"]
+            if cc["cc_id"] not in cc_has_gold
+        ]
+        inter_cc_candidates.sort(
+            key=lambda c: c.get("rerank_score", 0.0), reverse=True
+        )
+        inter_cc_pool: list[dict] = []   # [{"citation_id", "evidence", "source", "cc_id"}]
+        seen_inter_cit_ids: set[str] = set()
+        for cc in inter_cc_candidates[:INTER_CC_HARD_TOPK]:
+            sentences = [s["text"] for s in cc["cc_sentences"]]
+            for cit_id in extract_citations_from_text(" ".join(sentences)):
+                if cit_id not in gold_citation_ids and cit_id not in seen_inter_cit_ids:
+                    anchor = _find_citation_anchor(sentences, cit_id)
+                    if anchor is not None:
+                        inter_cc_pool.append({
+                            "citation_id": cit_id,
+                            "evidence":    build_evidence(sentences, anchor),
+                            "source":      "inter_cc_hard",
+                            "cc_id":       cc["cc_id"],
+                            "rerank_score": cc.get("rerank_score", 0.0),
+                        })
+                        seen_inter_cit_ids.add(cit_id)
+
+        # ── 对每个含gold的CC构建pairwise样本 ─────────────────────────────────
+        for cc in rec["cc_list"]:
+            if cc["cc_id"] not in cc_has_gold:
                 continue
+            sentences = [s["text"] for s in cc["cc_sentences"]]
+            gold_citations = resolve_gold_citations(sentences, gold_citation_ids)
+
+            # 过滤掉inter-CC pool中与当前CC重复的citations
+            current_cc_cits = set(extract_citations_from_text(" ".join(sentences)))
+            filtered_inter = [
+                n for n in inter_cc_pool
+                if n["citation_id"] not in current_cc_cits
+            ]
+            # 每个gold最多配 INTER_CC_HARD_PER_GOLD 个inter-CC hard negative
+            max_inter = INTER_CC_HARD_PER_GOLD * len(gold_citations)
+            sampled_inter = rng.sample(filtered_inter, min(len(filtered_inter), max_inter))
+
             pairs = build_pairs(
-                query_id      = rec["query_id"],
-                query         = rec["query"],
-                cc_id         = cc["cc_id"],
-                sentences     = sentences,
-                gold_citations= gold_citations,
-                rng           = rng,
+                query_id       = rec["query_id"],
+                query          = rec["query"],
+                cc_id          = cc["cc_id"],
+                sentences      = sentences,
+                gold_citations = gold_citations,
+                rng            = rng,
+                extra_negs     = sampled_inter,
             )
             if not pairs:
                 skipped += 1
@@ -290,10 +342,12 @@ def build(input_path: str, output_dir: Path = OUTPUT_DIR, seed: int = SEED):
 
     print(f"      生成 {len(all_pairs)} 个pair，{skipped} 条记录因无negative被跳过")
 
-    # 统计hard/random比例
-    hard_cnt = sum(1 for p in all_pairs if p["neg_source"] == "hard")
-    rand_cnt = len(all_pairs) - hard_cnt
-    print(f"      hard negatives: {hard_cnt}  |  random negatives: {rand_cnt}")
+    # 统计各类negative比例
+    from collections import Counter
+    src_cnt = Counter(p["neg_source"] for p in all_pairs)
+    print(f"      intra_cc_hard={src_cnt.get('hard',0)}  "
+          f"inter_cc_hard={src_cnt.get('inter_cc_hard',0)}  "
+          f"random={src_cnt.get('random',0)}")
 
     print("[3/4] 划分train/dev/test…")
     train, dev, test = split_data(all_pairs, rng=rng)
@@ -309,14 +363,18 @@ if __name__ == "__main__":
     parser.add_argument("--input",  help="原始JSONL路径，e.g. raw/swiss_legal.jsonl")
     parser.add_argument("--output_dir", default=str(OUTPUT_DIR))
     parser.add_argument("--window",     type=int, default=WINDOW,            help="evidence上下文窗口大小")
-    parser.add_argument("--hard_neg",   type=int, default=HARD_NEG_PER_GOLD, help="每个gold最多配几个hard neg")
-    parser.add_argument("--rand_neg",   type=int, default=RAND_NEG_PER_GOLD, help="每个gold额外配几个random neg")
-    parser.add_argument("--seed",       type=int, default=SEED)
+    parser.add_argument("--hard_neg",        type=int, default=HARD_NEG_PER_GOLD,        help="每个gold最多配几个intra-CC hard neg")
+    parser.add_argument("--inter_cc_hard",   type=int, default=INTER_CC_HARD_PER_GOLD,   help="每个gold最多配几个inter-CC hard neg")
+    parser.add_argument("--inter_cc_topk",   type=int, default=INTER_CC_HARD_TOPK,       help="取rerank_score最高的前K个无gold CC作为inter-CC hard来源")
+    parser.add_argument("--rand_neg",        type=int, default=RAND_NEG_PER_GOLD,        help="每个gold额外配几个random neg")
+    parser.add_argument("--seed",            type=int, default=SEED)
     args = parser.parse_args()
 
     # 允许命令行覆盖全局配置
-    WINDOW            = args.window
-    HARD_NEG_PER_GOLD = args.hard_neg
-    RAND_NEG_PER_GOLD = args.rand_neg
+    WINDOW                 = args.window
+    HARD_NEG_PER_GOLD      = args.hard_neg
+    INTER_CC_HARD_PER_GOLD = args.inter_cc_hard
+    INTER_CC_HARD_TOPK     = args.inter_cc_topk
+    RAND_NEG_PER_GOLD      = args.rand_neg
 
     build(args.input, Path(args.output_dir), args.seed)

@@ -46,6 +46,7 @@ for query_id, _d in train_candidate_d.items():
     for cc, rerank_score in _d['rerank']:
         cc_d = {}
         cc_d['cc_id'] = cc['citation']
+        cc_d['rerank_score'] = rerank_score
         cc_sentences = []
         sentences = citation_utils.split_sentences(cc['text'])
         for id, sentence in enumerate(sentences):

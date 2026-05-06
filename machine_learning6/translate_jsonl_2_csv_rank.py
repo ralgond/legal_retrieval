@@ -15,7 +15,7 @@ def parse(d):
     query_id = d['query_id']
     l = []
     for citation in d['global_ranked_citations']:
-        l.append((citation['citation_id'], citation['global_rank']))
+        l.append((citation['citation_id'], citation['rank']))
 
     l.sort(key=lambda x: x[1])
     return query_id, [citation for citation,_ in l if citation in law_d or citation in court_consideration_d]
