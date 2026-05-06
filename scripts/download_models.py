@@ -5,7 +5,9 @@ from modelscope import snapshot_download
 # model_id = 'Qwen/Qwen2.5-0.5B-Instruct'
 # model_id = 'AI-ModelScope/ModernBERT-base'
 
-model_id = 'AI-ModelScope/ModernBERT-large'
+# model_id = 'AI-ModelScope/ModernBERT-large'
+model_id = 'jhu-clsp/mmBERT-base'
+
 # 开始下载
 # cache_dir 参数用于指定保存路径
 model_dir = snapshot_download(model_id, ignore_file_pattern=['*.onnx'])

@@ -64,11 +64,16 @@ def _build_evidence_for_eval(sentences: list[str], cit_id: str, window: int = WI
     return " ".join(sentences[:min(window * 2 + 1, len(sentences))])
 
 
+# def build_input(query: str, evidence: str, citation_id: str,
+#                 sep_token: str = "[SEP]") -> tuple[str, str]:
+#     """[CLS] query [SEP] evidence [SEP] citation_id [SEP]"""
+#     return query, f"{evidence} {sep_token} {citation_id}"
+
 def build_input(query: str, evidence: str, citation_id: str,
                 sep_token: str = "[SEP]") -> tuple[str, str]:
-    """[CLS] query [SEP] evidence [SEP] citation_id [SEP]"""
-    return query, f"{evidence} {sep_token} {citation_id}"
-
+    text_a = f"{query} {sep_token} {evidence}"   # query和evidence合并为segment A
+    text_b = citation_id                          # citation_id独立为segment B
+    return text_a, text_b
 
 # ── 模型加载 ──────────────────────────────────────────────────────────────────
 

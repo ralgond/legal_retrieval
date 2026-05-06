@@ -94,7 +94,7 @@ class TrainArguments:
     dataloader_num_workers: int = field(default=2)
     report_to:           str   = field(default="none")
     seed:                int   = field(default=42)
-    early_stopping_patience: int = field(default=5,
+    early_stopping_patience: int = field(default=10,
                                          metadata={"help": "连续N次eval未提升则停止，0表示不启用"})
     eval_k: int = field(default=25, metadata={"help": "F1@K的K，应小于候选池平均大小"})
 
@@ -103,18 +103,23 @@ class TrainArguments:
 # encode-only不需要instruction格式，直接拼接三段文本
 # tokenizer会自动在开头加[CLS]、段间加[SEP]
 
-def build_input(query: str, evidence: str, citation_id: str,
-               sep_token: str = "[SEP]") -> tuple[str, str]:
-    """
-    返回 (text_a, text_b) 供tokenizer的sentence-pair输入。
-    最终编码为：[CLS] query [SEP] evidence [SEP] citation_id [SEP]
-    其中第一个[SEP]由tokenizer的sentence-pair机制插入（text_a和text_b之间），
-    第二个[SEP]手动插入text_b内部以区分evidence和citation_id。
-    """
-    text_a = query
-    text_b = f"{evidence} {sep_token} {citation_id}"
-    return text_a, text_b
+# def build_input(query: str, evidence: str, citation_id: str,
+#                sep_token: str = "[SEP]") -> tuple[str, str]:
+#     """
+#     返回 (text_a, text_b) 供tokenizer的sentence-pair输入。
+#     最终编码为：[CLS] query [SEP] evidence [SEP] citation_id [SEP]
+#     其中第一个[SEP]由tokenizer的sentence-pair机制插入（text_a和text_b之间），
+#     第二个[SEP]手动插入text_b内部以区分evidence和citation_id。
+#     """
+#     text_a = query
+#     text_b = f"{evidence} {sep_token} {citation_id}"
+#     return text_a, text_b
 
+def build_input(query: str, evidence: str, citation_id: str,
+                sep_token: str = "[SEP]") -> tuple[str, str]:
+    text_a = f"{query} {sep_token} {evidence}"   # query和evidence合并为segment A
+    text_b = citation_id                          # citation_id独立为segment B
+    return text_a, text_b
 
 # ── 模型定义 ──────────────────────────────────────────────────────────────────
 
