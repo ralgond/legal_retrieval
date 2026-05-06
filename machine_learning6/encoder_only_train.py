@@ -38,6 +38,7 @@ from peft import (
 )
 import wandb
 from tqdm import tqdm
+
 import os
 import sys
 src_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), '..', 'src'))
@@ -54,7 +55,7 @@ class DataArguments:
     dev_file:      str  = field(default="../data/ml6/dev.jsonl")
     dev_raw_file:  str  = field(default="../data/ml6/dev_raw.jsonl",
                                 metadata={"help": "原始格式dev集，用于F1评估"})
-    max_seq_len:   int  = field(default=512,  metadata={"help": "单条prompt最大token数"})
+    max_seq_len:   int  = field(default=1024,  metadata={"help": "单条prompt最大token数"})
     hard_neg_only: bool = field(default=False, metadata={"help": "只用hard negative训练"})
 
 
@@ -88,13 +89,14 @@ class TrainArguments:
     hard_neg_weight:     float = field(default=2.0,  metadata={"help": "hard/inter_cc_hard neg的loss权重"})
     logging_steps:       int   = field(default=50)
     eval_steps:          int   = field(default=1000)
-    save_steps:          int   = field(default=1000)
+    save_steps:          int   = field(default=10000000)
     save_total_limit:    int   = field(default=3)
     dataloader_num_workers: int = field(default=2)
     report_to:           str   = field(default="none")
     seed:                int   = field(default=42)
     early_stopping_patience: int = field(default=5,
                                          metadata={"help": "连续N次eval未提升则停止，0表示不启用"})
+    eval_k: int = field(default=25, metadata={"help": "F1@K的K，应小于候选池平均大小"})
 
 
 # ── Prompt构建 ────────────────────────────────────────────────────────────────
@@ -248,14 +250,12 @@ def evaluate_f1(
     k:            int = 25,
     max_samples:  int = 200,
     eval_batch_size: int = 32,
-
-    # 🔥 控制规模（非常重要）
-    topn_cc: int = 50,          # 只取前N个CC（按rerank_score）
-    max_cand: int = 1000,       # 每个query最多多少citation
-    max_cit_per_cc: int = 50,   # 每个CC最多保留多少citation
+    topn_cc:         int = 50,    # 只取rerank_score最高的前N个CC
+    max_cand:        int = 1000,  # 全局候选池最大数量
+    max_cit_per_cc:  int = 50,    # 每个CC最多保留多少citations
 ) -> float:
-
     model.eval()
+
     f1_scores = []
     count = 0
 
@@ -263,177 +263,100 @@ def evaluate_f1(
         for line in f:
             if count >= max_samples:
                 break
-
             line = line.strip()
             if not line:
                 continue
-
-            rec = json.loads(line)
-            query = rec["query"]
+            rec      = json.loads(line)
+            query    = rec["query"]
             gold_ids = set(rec["gold_citations"])
 
-            if not gold_ids:
-                continue
-
-            # ─────────────────────────────────────────
-            # Step 1️⃣：取 top-N CC（如果有rerank_score）
-            # ─────────────────────────────────────────
+            # ── Step 1：按rerank_score排序，取前topn_cc ──────────────────
             cc_list = rec["cc_list"]
-
-            if "rerank_score" in cc_list[0]:
-                cc_list = sorted(
-                    cc_list,
-                    key=lambda x: x.get("rerank_score", 0.0),
-                    reverse=True
-                )
-
+            if cc_list and "rerank_score" in cc_list[0]:
+                cc_list = sorted(cc_list, key=lambda x: x.get("rerank_score", 0.0), reverse=True)
             cc_list = cc_list[:topn_cc]
 
-            # ─────────────────────────────────────────
-            # Step 2️⃣：收集全局 candidates
-            # ─────────────────────────────────────────
-            cand_dict = {}  # cid -> best evidence
-
+            # ── Step 2：跨CC收集全局候选池，同一citation只保留首次evidence ──
+            cand_dict: dict[str, str] = {}   # cit_id -> evidence
             for cc in cc_list:
                 sentences = [s["text"] for s in cc["cc_sentences"]]
-                full_text = " ".join(sentences)
-
-                cit_ids = extract_citations_from_text(full_text)
-                if not cit_ids:
-                    continue
-
-                # 限制每个CC的citation数
-                if len(cit_ids) > max_cit_per_cc:
-                    cit_ids = cit_ids[:max_cit_per_cc]
-
-                for cid in cit_ids:
-                    evidence = _build_evidence_for_eval(sentences, cid)
-
-                    # 去重：同一个citation只保留一次
+                cit_ids_cc = extract_citations_from_text(" ".join(sentences))
+                if len(cit_ids_cc) > max_cit_per_cc:
+                    cit_ids_cc = cit_ids_cc[:max_cit_per_cc]
+                for cid in cit_ids_cc:
                     if cid not in cand_dict:
-                        cand_dict[cid] = evidence
+                        cand_dict[cid] = _build_evidence_for_eval(sentences, cid)
 
             if not cand_dict:
+                count += 1
                 continue
 
-            # ─────────────────────────────────────────
-            # Step 3️⃣：控制candidate总数（保留gold优先）
-            # ─────────────────────────────────────────
-            cand_items = list(cand_dict.items())  # [(cid, evidence)]
-
+            # ── Step 3：控制候选总数，gold优先保留 ─────────────────────────
+            cand_items = list(cand_dict.items())   # [(cit_id, evidence)]
             if len(cand_items) > max_cand:
                 gold_part  = [(cid, ev) for cid, ev in cand_items if cid in gold_ids]
                 other_part = [(cid, ev) for cid, ev in cand_items if cid not in gold_ids]
-
-                remain = max_cand - len(gold_part)
-                cand_items = gold_part + other_part[:max(0, remain)]
+                cand_items = gold_part + other_part[:max(0, max_cand - len(gold_part))]
 
             cit_ids = [cid for cid, _ in cand_items]
 
-            # ─────────────────────────────────────────
-            # Step 4️⃣：构建输入 & 排序（减少padding）
-            # ─────────────────────────────────────────
+            # ── Step 4：构建pairs，按长度排序减少padding ────────────────────
             pairs_with_idx = [
                 (i, build_input(query, ev, cid))
                 for i, (cid, ev) in enumerate(cand_items)
             ]
-
             pairs_with_idx.sort(key=lambda x: len(x[1][0]) + len(x[1][1]))
-
             sorted_indices = [x[0] for x in pairs_with_idx]
             sorted_pairs   = [x[1] for x in pairs_with_idx]
 
-            # ─────────────────────────────────────────
-            # Step 5️⃣：batch 推理
-            # ─────────────────────────────────────────
+            # ── Step 5：批量推理 ─────────────────────────────────────────────
             sorted_scores = []
-
             for i in range(0, len(sorted_pairs), eval_batch_size):
-                batch = sorted_pairs[i:i + eval_batch_size]
-                batch_a = [p[0] for p in batch]
-                batch_b = [p[1] for p in batch]
-
+                batch_a = [p[0] for p in sorted_pairs[i: i + eval_batch_size]]
+                batch_b = [p[1] for p in sorted_pairs[i: i + eval_batch_size]]
                 enc = tokenizer(
                     batch_a, batch_b,
-                    padding=True,
-                    truncation=True,
-                    max_length=max_seq_len,
-                    return_tensors="pt",
+                    padding=True, truncation=True,
+                    max_length=max_seq_len, return_tensors="pt",
                 ).to(device)
-
-                scores = model(
+                batch_scores = model(
                     input_ids=enc["input_ids"],
                     attention_mask=enc["attention_mask"],
                     token_type_ids=enc.get("token_type_ids"),
-                )
-
-                scores = scores.view(-1).cpu().tolist()
-                sorted_scores.extend(scores)
-
-                del enc, scores
+                ).view(-1).cpu().tolist()
+                sorted_scores.extend(batch_scores)
+                del enc, batch_scores
                 torch.cuda.empty_cache()
 
-            # ─────────────────────────────────────────
-            # Step 6️⃣：还原顺序
-            # ─────────────────────────────────────────
+            # ── Step 6：还原顺序，全局排序 ───────────────────────────────────
             all_scores = [0.0] * len(cand_items)
-
             for rank_pos, orig_idx in enumerate(sorted_indices):
                 all_scores[orig_idx] = sorted_scores[rank_pos]
 
-            # ─────────────────────────────────────────
-            # Step 7️⃣：global ranking
-            # ─────────────────────────────────────────
-            order = sorted(
-                range(len(all_scores)),
-                key=lambda i: all_scores[i],
-                reverse=True
-            )
+            top_k    = min(k, len(cit_ids))
+            order    = sorted(range(len(all_scores)), key=lambda idx: all_scores[idx], reverse=True)
+            pred_ids = {cit_ids[j] for j in order[:top_k]}
 
-            top_k = min(k, len(order))
-            pred_ids = {cit_ids[i] for i in order[:top_k]}
-
-            # ─────────────────────────────────────────
-            # Step 8️⃣：F1
-            # ─────────────────────────────────────────
-            tp = len(pred_ids & gold_ids)
-
+            # ── Step 7：F1（gold与全局候选对比）────────────────────────────
+            tp        = len(pred_ids & gold_ids)
             precision = tp / top_k if top_k > 0 else 0.0
             recall    = tp / len(gold_ids)
-
-            f1 = (
-                2 * precision * recall / (precision + recall)
-                if (precision + recall) > 0 else 0.0
-            )
-
+            f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
             f1_scores.append(f1)
 
-            # ─────────────────────────────────────────
-            # DEBUG（前2个query）
-            # ─────────────────────────────────────────
+            # ── DEBUG ────────────────────────────────────────────────────────
             if len(f1_scores) <= 2:
-                score_min = min(all_scores)
-                score_max = max(all_scores)
-                score_std = torch.tensor(all_scores).std().item()
-
-                gold_ranks = [
-                    order.index(cit_ids.index(g)) + 1
-                    for g in gold_ids if g in cit_ids
-                ]
-
-                print(
-                    f"[DEBUG] n_cand={len(cit_ids)} | "
-                    f"top_k={top_k} | "
-                    f"score_range=[{score_min:.4f}, {score_max:.4f}] | "
-                    f"std={score_std:.4f} | "
-                    f"gold_ranks={gold_ranks}"
-                )
+                score_std  = torch.tensor(all_scores).std().item()
+                gold_ranks = [order.index(cit_ids.index(g)) + 1
+                              for g in gold_ids if g in cit_ids]
+                print(f"  [DEBUG] n_cand={len(cit_ids)} | top_k={top_k} | "
+                      f"score_range=[{min(all_scores):.4f}, {max(all_scores):.4f}] | "
+                      f"std={score_std:.4f} | gold_ranks={gold_ranks}")
 
             count += 1
 
-    model.train()
     torch.cuda.empty_cache()
-
+    model.train()
     return sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
 
 
@@ -585,8 +508,9 @@ def main():
                     f1 = evaluate_f1(
                         model, tokenizer, data_args.dev_raw_file,
                         data_args.max_seq_len, device,
+                        k=train_args.eval_k,
                     )
-                    print(f"\nStep {global_step} | Macro F1@25 = {f1:.4f}")
+                    print(f"\nStep {global_step} | Macro F1@{train_args.eval_k} = {f1:.4f}")
                     if train_args.report_to == "wandb":
                         wandb.log({"eval/MacroF1@25": f1}, step=global_step)
 
@@ -606,7 +530,7 @@ def main():
                             model.encoder.save_pretrained(output_dir / "best")
                         else:
                             model.encoder.save_pretrained(output_dir / "best" / "encoder")
-                        print(f"  ★ 保存best model（Macro F1@25={best_f1:.4f}）")
+                        print(f"  ★ 保存best model（Macro F1@{train_args.eval_k}={best_f1:.4f}）")
                     else:
                         no_improvement_cnt += 1
                         print(f"  无提升（{no_improvement_cnt}/{train_args.early_stopping_patience}）")
@@ -631,7 +555,7 @@ def main():
         if stop_training:
             break
 
-    print(f"\n训练完成。Best Macro F1@25 = {best_f1:.4f}")
+    print(f"\n训练完成。Best Macro F1@{train_args.eval_k} = {best_f1:.4f}")
     final_dir = output_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
     torch.save({"model_state_dict": model.state_dict(),
