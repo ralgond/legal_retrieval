@@ -236,7 +236,7 @@ def main():
     parser.add_argument("--output_file",    required=True)
     parser.add_argument("--batch_size",     type=int, default=32)
     parser.add_argument("--max_seq_len",    type=int, default=512)
-    parser.add_argument("--top_k",          type=int, default=25,
+    parser.add_argument("--top_k",          type=int, default=40,
                         help="输出top-K citations")
     parser.add_argument("--topn_cc",        type=int, default=50,
                         help="只取rerank_score最高的前N个CC")

@@ -96,7 +96,7 @@ class TrainArguments:
     seed:                int   = field(default=42)
     early_stopping_patience: int = field(default=10,
                                          metadata={"help": "连续N次eval未提升则停止，0表示不启用"})
-    eval_k: int = field(default=25, metadata={"help": "F1@K的K，应小于候选池平均大小"})
+    eval_k: int = field(default=35, metadata={"help": "F1@K的K，应小于候选池平均大小"})
 
 
 # ── Prompt构建 ────────────────────────────────────────────────────────────────

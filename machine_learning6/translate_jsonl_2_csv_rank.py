@@ -26,7 +26,7 @@ predicted_citations_l = []
 for line in open("../data/ml6/output.jsonl"):
     query_id, l = parse(json.loads(line.strip()))
     query_id_l.append(query_id)
-    predicted_citations_l.append(';'.join(l[:25]))
+    predicted_citations_l.append(';'.join(l[:30]))
 
 df = pd.DataFrame({'query_id': query_id_l, "predicted_citations": predicted_citations_l})
 df.to_csv("../data/ml6/citation_predictions.csv", index=False)
